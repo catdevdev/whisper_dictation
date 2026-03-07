@@ -1,0 +1,7 @@
+numpy
+PyAudio
+pyperclip
+openai
+PyQt6
+pyobjc
+python-dotenv

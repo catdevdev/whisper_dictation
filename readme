@@ -1,0 +1,23 @@
+## How to Run on macOS Startup
+To make the app run automatically every time you log into your Mac, choose one of the two methods below. Method 1 (Automator) is highly recommended for GUI applications.
+
+## 1) Using Automator (Recommended & Easiest)
+This method creates a small macOS app wrapper that you can easily add to your Login Items.
+
+- Open the Automator app on your Mac.
+
+- Click New Document and select Application.
+
+- In the search bar on the left, type Run Shell Script and double-click it to add it to the workflow.
+
+- Replace the default text in the script box with the following (make sure to replace /path/to/your/whisper_dictation with your actual absolute path):
+
+Bash
+#!/bin/bash
+cd /path/to/your/whisper_dictation
+./venv/bin/python main.py &
+Press Cmd + S to save. Name it StartWhisper and save it to your Applications folder.
+
+- Open System Settings -> General -> Login Items.
+
+- Click the + button under "Open at Login" and select your new StartWhisper.app.
