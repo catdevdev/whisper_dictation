@@ -423,6 +423,9 @@ class StatusBarApp(QSystemTrayIcon):
         self.setIcon(QIcon(pixmap))
 
 
+rstarstrs
+
+
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
