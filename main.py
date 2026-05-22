@@ -6,6 +6,10 @@ import wave
 import tempfile
 import logging
 import json
+import array
+import ctypes
+import objc
+import random
 import pyaudio
 import pyperclip
 from datetime import datetime
@@ -22,9 +26,28 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QRectF, QPointF, QObject
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QIcon, QPixmap, QFont
+from PyQt6.QtGui import (
+    QPainter,
+    QColor,
+    QBrush,
+    QPen,
+    QIcon,
+    QPixmap,
+    QFont,
+    QCursor,
+    QRadialGradient,
+)
 
-from AppKit import NSEvent, NSEventModifierFlagShift, NSApplication
+from AppKit import (
+    NSEvent,
+    NSEventModifierFlagShift,
+    NSApplication,
+    NSScreenSaverWindowLevel,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowCollectionBehaviorIgnoresCycle,
+    NSWindowCollectionBehaviorStationary,
+)
 
 load_dotenv()
 
@@ -138,10 +161,235 @@ class LogWindow(QWidget):
         )
 
 
+class VoiceMeterOverlay(QWidget):
+    def __init__(self):
+        flags = (
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        super().__init__(None, flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self.level = 0.0
+        self.display_level = 0.0
+        self.anim_frame = 0
+        self.particles = []
+        self.particle_budget = 0.0
+        self.is_fading_out = False
+
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self._animate)
+        self.anim_timer.start(33)
+
+        self.hide()
+
+    def show_meter(self):
+        self.is_fading_out = False
+        self._cover_current_screen()
+        self.show()
+        self._apply_macos_window_level()
+        self.raise_()
+        self.update()
+
+    def hide_meter(self):
+        self.level = 0.0
+        self.display_level = 0.0
+        self.particle_budget = 0.0
+        self.is_fading_out = True
+        if not self.particles:
+            self.is_fading_out = False
+            self.hide()
+
+    def set_level(self, level):
+        self.level = max(0.0, min(1.0, float(level)))
+
+    def _animate(self):
+        self.anim_frame += 1
+        if self.level > self.display_level:
+            self.display_level = (self.display_level * 0.45) + (self.level * 0.55)
+        else:
+            self.display_level = (self.display_level * 0.82) + (self.level * 0.18)
+        self._update_particles()
+        if self.isVisible():
+            self.update()
+
+    def _cover_current_screen(self):
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if not screen:
+            return
+        self.setGeometry(screen.geometry())
+
+    def _update_particles(self):
+        level = self.display_level
+        if self.is_fading_out or level < 0.004:
+            self.particle_budget = 0.0
+        else:
+            self.particle_budget += 0.18 + level * 13.5
+
+        spawn_count = int(self.particle_budget)
+        self.particle_budget -= spawn_count
+        spawn_count = min(spawn_count, 16)
+
+        for _ in range(spawn_count):
+            self._spawn_particle(level)
+
+        next_particles = []
+        for particle in self.particles:
+            if self.is_fading_out:
+                life_decay = 8
+            elif level < 0.018:
+                life_decay = 4
+            else:
+                life_decay = 1
+
+            particle["life"] -= life_decay
+            particle["x"] += particle["vx"]
+            particle["y"] += particle["vy"]
+            particle["vx"] += math.sin((self.anim_frame + particle["phase"]) * 0.07) * 0.02
+            particle["vy"] += math.cos((self.anim_frame + particle["phase"]) * 0.06) * 0.018
+            particle["vx"] *= 0.996
+            particle["vy"] *= 0.996
+            particle["size"] *= 0.996
+            if particle["life"] > 0 and particle["size"] > 0.25:
+                next_particles.append(particle)
+
+        self.particles = next_particles[-420:]
+        if self.is_fading_out and not self.particles:
+            self.is_fading_out = False
+            self.hide()
+
+    def _spawn_particle(self, level):
+        edge = random.choice(("top", "right", "bottom", "left"))
+        margin = 6
+        w = self.width()
+        h = self.height()
+
+        if edge == "top":
+            source_x = random.uniform(0, w)
+            source_y = random.uniform(0, margin)
+            angle = random.uniform(math.pi * 0.22, math.pi * 0.78)
+        elif edge == "right":
+            source_x = w - random.uniform(0, margin)
+            source_y = random.uniform(0, h)
+            angle = random.uniform(math.pi * 0.72, math.pi * 1.28)
+        elif edge == "bottom":
+            source_x = random.uniform(0, w)
+            source_y = h - random.uniform(0, margin)
+            angle = random.uniform(math.pi * 1.22, math.pi * 1.78)
+        else:
+            source_x = random.uniform(0, margin)
+            source_y = random.uniform(0, h)
+            angle = random.uniform(-math.pi * 0.28, math.pi * 0.28)
+
+        speed = random.uniform(0.34 + level * 0.85, 0.95 + level * 2.55)
+        cool_mix = random.random()
+        color = QColor(
+            int(132 + cool_mix * 88),
+            int(210 + cool_mix * 36),
+            255,
+            int(150 + level * 90),
+        )
+
+        self.particles.append(
+            {
+                "x": source_x,
+                "y": source_y,
+                "vx": math.cos(angle) * speed,
+                "vy": math.sin(angle) * speed + random.uniform(-0.08, 0.08),
+                "size": random.uniform(0.55, 1.2 + level * 0.95),
+                "life": random.randint(42, 82) + int(level * 28),
+                "max_life": 112,
+                "color": color,
+                "phase": random.uniform(0, 360),
+                "sparkle": random.random() < 0.28,
+                "trail": random.uniform(5.0, 12.0 + level * 11.0),
+            }
+        )
+
+    def _apply_macos_window_level(self):
+        if sys.platform != "darwin":
+            return
+
+        try:
+            native_view = objc.objc_object(c_void_p=ctypes.c_void_p(int(self.winId())))
+            native_window = native_view.window()
+            if native_window is None:
+                return
+
+            behavior = (
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorIgnoresCycle
+            )
+            native_window.setLevel_(NSScreenSaverWindowLevel)
+            native_window.setCollectionBehavior_(behavior)
+            native_window.setIgnoresMouseEvents_(True)
+            native_window.orderFrontRegardless()
+        except Exception as e:
+            logger.warning(f"Voice meter native window setup failed: {e}")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        self._paint_particles(painter)
+
+        painter.end()
+
+    def _paint_particles(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for particle in self.particles:
+            age_alpha = max(0.0, min(1.0, particle["life"] / particle["max_life"]))
+            color = QColor(particle["color"])
+            color.setAlpha(int(color.alpha() * age_alpha))
+
+            trail_alpha = int(color.alpha() * 0.32)
+            if trail_alpha > 0:
+                trail_pen = QPen(QColor(color.red(), color.green(), color.blue(), trail_alpha), 0.8)
+                painter.setPen(trail_pen)
+                painter.drawLine(
+                    QPointF(particle["x"], particle["y"]),
+                    QPointF(
+                        particle["x"] - particle["vx"] * particle["trail"],
+                        particle["y"] - particle["vy"] * particle["trail"],
+                    ),
+                )
+                painter.setPen(Qt.PenStyle.NoPen)
+
+            if particle["sparkle"] and color.alpha() > 48:
+                glow = QRadialGradient(
+                    QPointF(particle["x"], particle["y"]),
+                    particle["size"] * 4.0,
+                )
+                glow.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), int(color.alpha() * 0.62)))
+                glow.setColorAt(0.42, QColor(color.red(), color.green(), color.blue(), int(color.alpha() * 0.18)))
+                glow.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+                painter.setBrush(QBrush(glow))
+                painter.drawEllipse(
+                    QPointF(particle["x"], particle["y"]),
+                    particle["size"] * 4.0,
+                    particle["size"] * 4.0,
+                )
+
+            core = QColor(color)
+            core.setAlpha(min(235, color.alpha() + 30))
+            painter.setBrush(QBrush(core))
+            painter.drawEllipse(
+                QPointF(particle["x"], particle["y"]),
+                particle["size"],
+                particle["size"],
+            )
+
+
 class AudioWorker(QThread):
     finished_signal = pyqtSignal(object)
     cost_update_signal = pyqtSignal()
     limit_reached_signal = pyqtSignal()
+    level_signal = pyqtSignal(float)
 
     def __init__(self):
         super().__init__()
@@ -172,6 +420,7 @@ class AudioWorker(QThread):
             while self.is_recording:
                 data = stream.read(CHUNK, exception_on_overflow=False)
                 frames.append(data)
+                self.level_signal.emit(self._audio_level(data))
 
                 if time.time() - start_time >= MAX_RECORD_SECONDS:
                     logger.info("⏱️ 2 minutes limit reached. Auto-stopping.")
@@ -198,6 +447,21 @@ class AudioWorker(QThread):
                 self.finished_signal.emit(None)
         finally:
             audio.terminate()
+
+    def _audio_level(self, data):
+        samples = array.array("h")
+        samples.frombytes(data)
+        if sys.byteorder == "big":
+            samples.byteswap()
+        if not samples:
+            return 0.0
+
+        rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+        peak = max(abs(sample) for sample in samples)
+        raw_level = (rms / 32768.0) * 34.0 + (peak / 32768.0) * 1.4
+        if raw_level < 0.0012:
+            return 0.0
+        return min(1.0, math.pow(raw_level, 0.55) * 1.25)
 
     def _transcribe(self, frames, duration_sec, sample_width):
         duration_min = duration_sec / 60.0
@@ -252,6 +516,7 @@ class StatusBarApp(QSystemTrayIcon):
         self.anim_frame = 0
 
         self.log_window = LogWindow()
+        self.voice_meter = VoiceMeterOverlay()
 
         gui_handler = QtLogHandler()
         gui_handler.setFormatter(
@@ -302,6 +567,7 @@ class StatusBarApp(QSystemTrayIcon):
                 self.worker.finished_signal.disconnect()
                 self.worker.cost_update_signal.disconnect()
                 self.worker.limit_reached_signal.disconnect()
+                self.worker.level_signal.disconnect()
             except TypeError:
                 pass
 
@@ -309,6 +575,15 @@ class StatusBarApp(QSystemTrayIcon):
         self.worker.finished_signal.connect(self.on_transcription_done)
         self.worker.cost_update_signal.connect(self.log_window.update_cost_display)
         self.worker.limit_reached_signal.connect(self.on_auto_stop)
+        self.worker.level_signal.connect(self.voice_meter.set_level)
+
+    def set_state(self, state):
+        self.state = state
+        if state == "recording":
+            self.voice_meter.show_meter()
+        else:
+            self.voice_meter.hide_meter()
+        self.update_icon()
 
     def show_logs(self):
         self.log_window.update_cost_display()
@@ -318,7 +593,7 @@ class StatusBarApp(QSystemTrayIcon):
 
     def on_auto_stop(self):
         if self.state == "recording":
-            self.state = "processing"
+            self.set_state("processing")
             self.waiting_for_hold = False
 
     def check_keys(self):
@@ -332,14 +607,14 @@ class StatusBarApp(QSystemTrayIcon):
 
         if is_shift and not self.last_shift:
             if self.state == "recording":
-                self.state = "processing"
+                self.set_state("processing")
                 self.worker.stop_recording()
                 self.waiting_for_hold = False
             elif self.state == "processing":
                 # --- ЛОГИКА ОТМЕНЫ ЗАВИСАНИЯ ---
                 logger.warning("⛔ Запрос отменен пользователем вручную.")
                 self._recreate_worker()
-                self.state = "idle"
+                self.set_state("idle")
                 self.waiting_for_hold = False
             else:
                 self.shift_press_time = now
@@ -356,7 +631,7 @@ class StatusBarApp(QSystemTrayIcon):
             if self.waiting_for_hold and self.state in ["idle", "done"]:
                 if (now - self.shift_press_time) >= HOLD_THRESHOLD:
                     logger.info("🎤 Tap and Hold detected. Starting dictation.")
-                    self.state = "recording"
+                    self.set_state("recording")
                     self.worker.start_recording()
                     self.waiting_for_hold = False
 
@@ -364,13 +639,12 @@ class StatusBarApp(QSystemTrayIcon):
 
     def on_transcription_done(self, text):
         if text is None:
-            self.state = "idle"
-            self.update_icon()
+            self.set_state("idle")
             return
 
         self._paste(text)
-        self.state = "done"
-        QTimer.singleShot(1500, lambda: setattr(self, "state", "idle"))
+        self.set_state("done")
+        QTimer.singleShot(1500, lambda: self.set_state("idle"))
 
     def _paste(self, text):
         try:
@@ -423,9 +697,6 @@ class StatusBarApp(QSystemTrayIcon):
         self.setIcon(QIcon(pixmap))
 
 
-rstarstrs
-
-
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -438,4 +709,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
