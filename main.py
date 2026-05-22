@@ -830,9 +830,9 @@ class CosmicSpecterOverlay(QWidget):
             progress = max(0.0, min(1.0, specter["age"] / specter["duration"]))
             specter["leaving"] = True
             specter["exit_age"] = 0
-            specter["exit_duration"] = random.randint(46, 68)
+            specter["exit_duration"] = random.randint(92, 128)
             specter["exit_wave"] = max(0.72, math.sin(progress * math.pi))
-            specter["exit_drift"] = random.uniform(-18, 18)
+            specter["exit_drift"] = random.uniform(-32, 32)
 
     def _spawn_particle(self, level):
         edge = random.choice(("top", "bottom"))
@@ -971,10 +971,10 @@ class CosmicSpecterOverlay(QWidget):
             progress = max(0.0, min(1.0, specter["age"] / specter["duration"]))
             if specter.get("leaving"):
                 exit_progress = max(0.0, min(1.0, specter.get("exit_age", 0) / specter.get("exit_duration", 58)))
-                exit_ease = 1.0 - math.pow(1.0 - exit_progress, 3)
+                exit_ease = exit_progress * exit_progress * (3.0 - 2.0 * exit_progress)
                 peek_wave = specter.get("exit_wave", max(0.72, math.sin(progress * math.pi)))
-                outward = exit_ease * (specter["peek"] + size * 2.25)
-                fade = (1.0 - exit_progress) * min(1.0, peek_wave * 1.9)
+                outward = exit_ease * (specter["peek"] + size * 2.8)
+                fade = math.pow(1.0 - exit_progress, 0.55) * min(1.0, peek_wave * 1.9)
             else:
                 exit_ease = 0.0
                 outward = 0.0
