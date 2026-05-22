@@ -2246,6 +2246,7 @@ class StatusBarApp(QSystemTrayIcon):
         self.effect_key = self._load_effect_key()
         self.effect_actions = {}
         self.worker = None
+        self.retired_workers = []
 
         self.log_window = LogWindow()
         self.voice_meter = self._create_voice_meter(self.effect_key)
@@ -2360,9 +2361,38 @@ class StatusBarApp(QSystemTrayIcon):
         self.worker.limit_reached_signal.connect(self.on_auto_stop)
         self.worker.level_signal.connect(self.voice_meter.set_level)
 
-    def _replace_worker(self):
-        if self.worker and self.worker.isRunning():
-            self.worker.cancel()
+    def _disconnect_worker(self, worker):
+        for signal, slot in (
+            (worker.finished_signal, self.on_transcription_done),
+            (worker.cost_update_signal, self.log_window.update_cost_display),
+            (worker.limit_reached_signal, self.on_auto_stop),
+            (worker.level_signal, self.voice_meter.set_level),
+        ):
+            try:
+                signal.disconnect(slot)
+            except TypeError:
+                pass
+
+    def _retire_worker(self, worker, cancel_running=False):
+        if worker is None:
+            return
+        self._disconnect_worker(worker)
+        if worker.isRunning():
+            if cancel_running:
+                worker.cancel()
+            self.retired_workers.append(worker)
+
+            def cleanup():
+                if worker in self.retired_workers:
+                    self.retired_workers.remove(worker)
+                worker.deleteLater()
+
+            worker.finished.connect(cleanup)
+        else:
+            worker.deleteLater()
+
+    def _replace_worker(self, cancel_running=False):
+        self._retire_worker(self.worker, cancel_running=cancel_running)
         self._create_worker()
 
     def set_state(self, state):
@@ -2398,7 +2428,7 @@ class StatusBarApp(QSystemTrayIcon):
                 self.waiting_for_hold = False
             elif self.state == "processing":
                 logger.warning("Current transcription cancelled by user")
-                self._replace_worker()
+                self._replace_worker(cancel_running=True)
                 self.set_state("idle")
                 self.waiting_for_hold = False
             else:
