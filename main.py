@@ -176,6 +176,7 @@ class LogWindow(QWidget):
 class VoiceMeterOverlay(QWidget):
     tick_ms = 33
     max_particles = 118
+    max_edge_particles = 96
 
     def __init__(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
@@ -190,8 +191,10 @@ class VoiceMeterOverlay(QWidget):
         self.mode = "idle"
         self.frame = 0
         self.spawn_budget = 0.0
+        self.edge_spawn_budget = 0.0
         self.fading_out = False
         self.particles = []
+        self.edge_particles = []
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -208,8 +211,9 @@ class VoiceMeterOverlay(QWidget):
     def hide_meter(self):
         self.level = 0.0
         self.spawn_budget = 0.0
+        self.edge_spawn_budget = 0.0
         self.fading_out = True
-        if not self.particles:
+        if not self.particles and not self.edge_particles:
             self.fading_out = False
             self.hide()
 
@@ -232,7 +236,7 @@ class VoiceMeterOverlay(QWidget):
             self.setGeometry(screen.geometry())
 
     def _animate(self):
-        if not self.isVisible() and not self.particles:
+        if not self.isVisible() and not self.particles and not self.edge_particles:
             return
 
         self.frame += 1
@@ -248,6 +252,7 @@ class VoiceMeterOverlay(QWidget):
 
         self.display_level = self.display_level * (1.0 - smoothing) + target_level * smoothing
         self._update_particles()
+        self._update_edge_particles()
         if self.isVisible():
             self.update()
 
@@ -292,9 +297,101 @@ class VoiceMeterOverlay(QWidget):
                 next_particles.append(particle)
 
         self.particles = next_particles[-self.max_particles :]
-        if self.fading_out and not self.particles:
+        if self.fading_out and not self.particles and not self.edge_particles:
             self.fading_out = False
             self.hide()
+
+    def _update_edge_particles(self):
+        level = self.display_level
+        if self.fading_out or level < 0.006:
+            self.edge_spawn_budget = 0.0
+        elif self.mode == "processing":
+            self.edge_spawn_budget += 0.16 + level * 1.4
+        else:
+            self.edge_spawn_budget += 0.22 + level * level * 4.8
+
+        spawn_cap = 4 if self.mode == "processing" else 7
+        spawn_count = min(
+            int(self.edge_spawn_budget),
+            spawn_cap,
+            self.max_edge_particles - len(self.edge_particles),
+        )
+        self.edge_spawn_budget -= spawn_count
+        for _ in range(max(0, spawn_count)):
+            self._spawn_edge_particle(level)
+
+        w = max(1, self.width())
+        h = max(1, self.height())
+        next_particles = []
+        for particle in self.edge_particles:
+            particle["life"] -= 3 if self.fading_out else 1
+            particle["phase"] += particle["phase_speed"]
+            particle["x"] += particle["vx"] + math.sin(particle["phase"]) * particle["wave"]
+            particle["y"] += particle["vy"] + math.cos(particle["phase"] * 0.83) * particle["wave"]
+            particle["vx"] *= 0.992
+            particle["vy"] *= 0.992
+
+            if particle["life"] > 0 and -90 < particle["x"] < w + 90 and -90 < particle["y"] < h + 90:
+                next_particles.append(particle)
+
+        self.edge_particles = next_particles[-self.max_edge_particles :]
+
+    def _spawn_edge_particle(self, level):
+        w = max(1, self.width())
+        h = max(1, self.height())
+        edge = random.choice(("top", "right", "bottom", "left"))
+        margin = random.uniform(3.0, 18.0)
+        speed = random.uniform(0.75, 1.75) + level * random.uniform(1.4, 3.6)
+
+        if edge == "top":
+            x = random.uniform(0, w)
+            y = margin
+            vx = random.choice((-1, 1)) * speed
+            vy = random.uniform(0.02, 0.22) + level * 0.20
+        elif edge == "bottom":
+            x = random.uniform(0, w)
+            y = h - margin
+            vx = random.choice((-1, 1)) * speed
+            vy = -random.uniform(0.02, 0.22) - level * 0.20
+        elif edge == "left":
+            x = margin
+            y = random.uniform(0, h)
+            vx = random.uniform(0.02, 0.22) + level * 0.20
+            vy = random.choice((-1, 1)) * speed
+        else:
+            x = w - margin
+            y = random.uniform(0, h)
+            vx = -random.uniform(0.02, 0.22) - level * 0.20
+            vy = random.choice((-1, 1)) * speed
+
+        color = random.choice(
+            (
+                (88, 248, 255),
+                (145, 255, 214),
+                (255, 238, 148),
+                (255, 142, 222),
+                (226, 240, 255),
+            )
+        )
+        life = random.randint(46, 92) + int(level * 30)
+        self.edge_particles.append(
+            {
+                "x": x,
+                "y": y,
+                "vx": vx,
+                "vy": vy,
+                "life": life,
+                "max_life": life,
+                "color": color,
+                "alpha": random.randint(120, 220),
+                "size": random.choice((1.0, 1.5, 2.0, 2.5)),
+                "trail": random.uniform(10.0, 24.0) + level * 18.0,
+                "phase": random.uniform(0.0, math.tau),
+                "phase_speed": random.uniform(0.035, 0.09),
+                "wave": random.uniform(0.02, 0.18) + level * 0.18,
+                "spark": random.randint(0, 5),
+            }
+        )
 
     def _spawn_particle(self, level):
         w = max(1, self.width())
@@ -401,6 +498,8 @@ class VoiceMeterOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
 
+        self._paint_edge_particles(painter)
+
         for particle in self.particles:
             life_ratio = max(0.0, min(1.0, particle["life"] / particle["max_life"]))
             fade = math.sin(life_ratio * math.pi) if life_ratio < 0.98 else 1.0
@@ -439,6 +538,39 @@ class VoiceMeterOverlay(QWidget):
                 painter.drawRect(QRectF(round(x + math.sin(particle["phase"]) * 4.0), round(y + math.cos(particle["phase"]) * 4.0), 1.0, 1.0))
 
         painter.end()
+
+    def _paint_edge_particles(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for particle in self.edge_particles:
+            life_ratio = max(0.0, min(1.0, particle["life"] / particle["max_life"]))
+            fade = math.sin(life_ratio * math.pi) if life_ratio < 0.98 else 1.0
+            alpha = int(particle["alpha"] * fade)
+            if alpha <= 0:
+                continue
+
+            r, g, b = particle["color"]
+            x = particle["x"]
+            y = particle["y"]
+            size = particle["size"]
+            trail_len = particle["trail"] * (0.8 + self.display_level * 0.75)
+            tail_steps = 5
+            for step in range(1, tail_steps + 1):
+                ratio = step / tail_steps
+                tail_x = x - particle["vx"] * trail_len * ratio
+                tail_y = y - particle["vy"] * trail_len * ratio
+                tail_alpha = int(alpha * 0.46 * (1.0 - ratio))
+                if tail_alpha <= 2:
+                    continue
+                painter.setBrush(QBrush(QColor(r, g, b, tail_alpha)))
+                painter.drawRect(QRectF(round(tail_x), round(tail_y), max(1.0, size - 0.4), max(1.0, size - 0.4)))
+
+            painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+            painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+
+            if particle["spark"] == 0 and alpha > 90:
+                painter.setBrush(QBrush(QColor(255, 255, 245, int(alpha * 0.58))))
+                painter.drawRect(QRectF(round(x - 1), round(y - size - 1), 2.0, max(1.0, size)))
+                painter.drawRect(QRectF(round(x - size - 1), round(y - 1), max(1.0, size), 2.0))
 
 
 class SimpleVoiceMeterOverlay(QWidget):
