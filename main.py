@@ -24,7 +24,6 @@ from AppKit import (
     NSPasteboard,
     NSPasteboardTypeString,
     NSScreenSaverWindowLevel,
-    NSStatusBar,
     NSWorkspace,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -707,6 +706,7 @@ class CosmicSpecterOverlay(QWidget):
             self.level = 0.0
             self.spawn_budget = 0.0
             self.specter_budget = 0.0
+            self._start_specter_exit()
             self.fading_out = True
             if not self.particles and not self.specters:
                 self.fading_out = False
@@ -789,15 +789,32 @@ class CosmicSpecterOverlay(QWidget):
 
         next_specters = []
         for specter in self.specters:
-            specter["age"] += 8 if self.fading_out else 1
+            if self.fading_out:
+                specter["exit_age"] = specter.get("exit_age", 0) + 1
+            else:
+                specter["age"] += 1
             specter["bob"] += 0.06
-            if specter["age"] < specter["duration"]:
+            if self.fading_out:
+                if specter.get("exit_age", 0) < specter.get("exit_duration", 58):
+                    next_specters.append(specter)
+            elif specter["age"] < specter["duration"]:
                 next_specters.append(specter)
 
         self.specters = next_specters[-self.max_specters :]
         if self.fading_out and not self.particles and not self.specters:
             self.fading_out = False
             self.hide()
+
+    def _start_specter_exit(self):
+        for specter in self.specters:
+            if specter.get("leaving"):
+                continue
+            progress = max(0.0, min(1.0, specter["age"] / specter["duration"]))
+            specter["leaving"] = True
+            specter["exit_age"] = 0
+            specter["exit_duration"] = random.randint(46, 68)
+            specter["exit_wave"] = max(0.72, math.sin(progress * math.pi))
+            specter["exit_drift"] = random.uniform(-18, 18)
 
     def _spawn_particle(self, level):
         edge = random.choice(("top", "bottom"))
@@ -934,15 +951,25 @@ class CosmicSpecterOverlay(QWidget):
             size = specter["size"]
             bob = math.sin(specter["bob"]) * size * 0.18
             progress = max(0.0, min(1.0, specter["age"] / specter["duration"]))
-            peek_wave = math.sin(progress * math.pi)
+            if specter.get("leaving"):
+                exit_progress = max(0.0, min(1.0, specter.get("exit_age", 0) / specter.get("exit_duration", 58)))
+                exit_ease = 1.0 - math.pow(1.0 - exit_progress, 3)
+                peek_wave = specter.get("exit_wave", max(0.72, math.sin(progress * math.pi)))
+                outward = exit_ease * (specter["peek"] + size * 2.25)
+                fade = (1.0 - exit_progress) * min(1.0, peek_wave * 1.9)
+            else:
+                exit_ease = 0.0
+                outward = 0.0
+                peek_wave = math.sin(progress * math.pi)
+                fade = min(1.0, peek_wave * 1.9)
+
             offset = specter["peek"] * peek_wave
             if specter["side"] == "left":
-                x = -size * 0.56 + offset
+                x = -size * 0.56 + offset - outward
             else:
-                x = w + size * 0.56 - offset
-            y = specter["anchor"] + bob + specter["drift"] * progress
+                x = w + size * 0.56 - offset + outward
+            y = specter["anchor"] + bob + specter["drift"] * progress + specter.get("exit_drift", 0.0) * exit_ease
 
-            fade = min(1.0, peek_wave * 1.9)
             tint = QColor(specter["tint"])
             tint.setAlpha(int(tint.alpha() * fade))
             glow = QRadialGradient(QPointF(x, y), size * 1.4)
@@ -1232,37 +1259,6 @@ class PasteController:
             core_foundation.CFRelease(key_up)
 
 
-class NativeStatusItem:
-    def __init__(self):
-        self.item = None
-        self.button = None
-        try:
-            self.item = NSStatusBar.systemStatusBar().statusItemWithLength_(-1)
-            self.button = self.item.button()
-            self.set_state("idle")
-            logger.info("Native macOS status item installed")
-        except Exception as exc:
-            logger.warning("Could not install native macOS status item: %s", exc)
-
-    def set_state(self, state):
-        if self.button is None:
-            return
-        titles = {
-            "idle": "🛸",
-            "recording": "REC",
-            "processing": "...",
-            "done": "OK",
-        }
-        tooltips = {
-            "idle": "Whisper Dictation: idle",
-            "recording": "Whisper Dictation: recording",
-            "processing": "Whisper Dictation: transcribing",
-            "done": "Whisper Dictation: done",
-        }
-        self.button.setTitle_(titles.get(state, "W"))
-        self.button.setToolTip_(tooltips.get(state, "Whisper Dictation"))
-
-
 class StatusBarApp(QSystemTrayIcon):
     def __init__(self, app):
         super().__init__()
@@ -1281,7 +1277,6 @@ class StatusBarApp(QSystemTrayIcon):
         self.log_window = LogWindow()
         self.voice_meter = self._create_voice_meter(self.effect_key)
         self._setup_logging()
-        self.native_status = NativeStatusItem()
         self._setup_menu()
         self._setup_timers()
         self._create_worker()
@@ -1428,7 +1423,6 @@ class StatusBarApp(QSystemTrayIcon):
 
     def set_state(self, state):
         self.state = state
-        self.native_status.set_state(state)
         self.voice_meter.set_mode(state)
         self.update_icon()
 
