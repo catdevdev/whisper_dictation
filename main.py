@@ -179,6 +179,8 @@ class VoiceMeterOverlay(QWidget):
     tick_ms = 33
     max_particles = 118
     max_edge_particles = 180
+    max_meteors = 34
+    max_explosions = 180
 
     def __init__(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
@@ -194,10 +196,13 @@ class VoiceMeterOverlay(QWidget):
         self.frame = 0
         self.spawn_budget = 0.0
         self.edge_spawn_budget = 0.0
+        self.meteor_spawn_budget = 0.0
         self.fading_out = False
         self.particles = []
         self.edge_particles = []
         self.border_comets = []
+        self.meteors = []
+        self.explosions = []
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -216,8 +221,9 @@ class VoiceMeterOverlay(QWidget):
         self.level = 0.0
         self.spawn_budget = 0.0
         self.edge_spawn_budget = 0.0
+        self.meteor_spawn_budget = 0.0
         self.fading_out = True
-        if not self.particles and not self.edge_particles and not self.border_comets:
+        if not self._has_active_pixels():
             self.fading_out = False
             self.hide()
 
@@ -240,7 +246,7 @@ class VoiceMeterOverlay(QWidget):
             self.setGeometry(screen.geometry())
 
     def _animate(self):
-        if not self.isVisible() and not self.particles and not self.edge_particles and not self.border_comets:
+        if not self.isVisible() and not self._has_active_pixels():
             return
 
         self.frame += 1
@@ -258,8 +264,16 @@ class VoiceMeterOverlay(QWidget):
         self._update_particles()
         self._update_edge_particles()
         self._update_border_comets()
+        self._update_meteors()
+        self._update_explosions()
         if self.isVisible():
             self.update()
+
+    def _has_active_pixels(self):
+        return bool(self.particles or self.edge_particles or self.border_comets or self.meteors or self.explosions)
+
+    def _ground_y(self):
+        return self.height() - max(64.0, min(150.0, self.height() * 0.13))
 
     def _update_particles(self):
         level = self.display_level
@@ -302,9 +316,121 @@ class VoiceMeterOverlay(QWidget):
                 next_particles.append(particle)
 
         self.particles = next_particles[-self.max_particles :]
-        if self.fading_out and not self.particles and not self.edge_particles and not self.border_comets:
+        if self.fading_out and not self._has_active_pixels():
             self.fading_out = False
             self.hide()
+
+    def _update_meteors(self):
+        level = self.display_level
+        if self.fading_out:
+            self.meteor_spawn_budget = 0.0
+        elif self.mode == "processing":
+            self.meteor_spawn_budget += 0.08 + level * 0.8
+        else:
+            self.meteor_spawn_budget += 0.16 + level * 2.8 + level * level * 5.0
+
+        spawn_cap = 2 if self.mode == "processing" else 5
+        spawn_count = min(int(self.meteor_spawn_budget), spawn_cap, self.max_meteors - len(self.meteors))
+        self.meteor_spawn_budget -= spawn_count
+        for _ in range(max(0, spawn_count)):
+            self._spawn_meteor(level)
+
+        ground_y = self._ground_y()
+        next_meteors = []
+        for meteor in self.meteors:
+            meteor["x"] += meteor["vx"]
+            meteor["y"] += meteor["vy"]
+            meteor["vy"] += meteor["gravity"]
+            meteor["phase"] += 0.08
+            meteor["trail"].append((meteor["x"], meteor["y"]))
+            if len(meteor["trail"]) > meteor["trail_limit"]:
+                meteor["trail"].pop(0)
+
+            if meteor["y"] >= ground_y - meteor["impact_offset"]:
+                self._spawn_explosion(meteor["x"], ground_y - meteor["impact_offset"], meteor["color"], meteor["power"])
+                continue
+
+            if -90 < meteor["x"] < self.width() + 90 and meteor["y"] < self.height() + 80:
+                next_meteors.append(meteor)
+
+        self.meteors = next_meteors[-self.max_meteors :]
+
+    def _spawn_meteor(self, level):
+        w = max(1, self.width())
+        h = max(1, self.height())
+        entry = random.choice(("top", "top", "left", "right"))
+        speed = random.uniform(3.2, 6.2) + level * random.uniform(5.0, 10.5)
+
+        if entry == "top":
+            x = random.uniform(-w * 0.1, w * 1.1)
+            y = -random.uniform(22.0, 110.0)
+            vx = random.uniform(-1.9, 1.9) + random.choice((-1, 1)) * level * random.uniform(0.8, 2.2)
+            vy = speed
+        elif entry == "left":
+            x = -random.uniform(22.0, 130.0)
+            y = random.uniform(-20.0, h * 0.38)
+            vx = speed * random.uniform(0.45, 0.85)
+            vy = speed * random.uniform(0.62, 1.05)
+        else:
+            x = w + random.uniform(22.0, 130.0)
+            y = random.uniform(-20.0, h * 0.38)
+            vx = -speed * random.uniform(0.45, 0.85)
+            vy = speed * random.uniform(0.62, 1.05)
+
+        color = random.choice(((255, 231, 134), (255, 150, 80), (255, 98, 152), (118, 245, 255), (210, 180, 255)))
+        self.meteors.append(
+            {
+                "x": x,
+                "y": y,
+                "vx": vx,
+                "vy": vy,
+                "gravity": random.uniform(0.025, 0.065) + level * 0.025,
+                "size": random.choice((4.0, 5.0, 6.0, 7.0)) + level * 3.0,
+                "color": color,
+                "alpha": random.randint(220, 255),
+                "trail": [],
+                "trail_limit": random.randint(9, 16),
+                "phase": random.uniform(0.0, math.tau),
+                "impact_offset": random.uniform(0.0, 20.0),
+                "power": random.uniform(0.7, 1.2) + level * 1.6,
+            }
+        )
+
+    def _spawn_explosion(self, x, y, color, power):
+        burst_count = min(34, int(12 + power * 10))
+        for _ in range(burst_count):
+            angle = random.uniform(math.pi * 1.05, math.pi * 1.95)
+            speed = random.uniform(1.1, 4.6) * power
+            r, g, b = random.choice((color, (255, 237, 170), (255, 126, 64), (255, 84, 142)))
+            life = random.randint(24, 52) + int(power * 8)
+            self.explosions.append(
+                {
+                    "x": x + random.uniform(-5.0, 5.0),
+                    "y": y + random.uniform(-4.0, 3.0),
+                    "vx": math.cos(angle) * speed,
+                    "vy": math.sin(angle) * speed,
+                    "life": life,
+                    "max_life": life,
+                    "size": random.choice((2.0, 3.0, 4.0, 5.0)) + power,
+                    "color": (r, g, b),
+                    "alpha": random.randint(190, 255),
+                }
+            )
+        self.explosions = self.explosions[-self.max_explosions :]
+
+    def _update_explosions(self):
+        next_particles = []
+        for particle in self.explosions:
+            particle["life"] -= 1
+            particle["x"] += particle["vx"]
+            particle["y"] += particle["vy"]
+            particle["vy"] += 0.12
+            particle["vx"] *= 0.955
+            particle["vy"] *= 0.975
+            particle["size"] *= 0.985
+            if particle["life"] > 0 and particle["size"] > 0.35:
+                next_particles.append(particle)
+        self.explosions = next_particles[-self.max_explosions :]
 
     def _seed_border_comets(self):
         if self.border_comets:
@@ -540,8 +666,11 @@ class VoiceMeterOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
 
+        self._paint_mars_ground(painter)
         self._paint_border_comets(painter)
         self._paint_edge_particles(painter)
+        self._paint_meteors(painter)
+        self._paint_explosions(painter)
 
         for particle in self.particles:
             life_ratio = max(0.0, min(1.0, particle["life"] / particle["max_life"]))
@@ -581,6 +710,68 @@ class VoiceMeterOverlay(QWidget):
                 painter.drawRect(QRectF(round(x + math.sin(particle["phase"]) * 4.0), round(y + math.cos(particle["phase"]) * 4.0), 1.0, 1.0))
 
         painter.end()
+
+    def _paint_mars_ground(self, painter):
+        w = self.width()
+        h = self.height()
+        ground_y = self._ground_y()
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        horizon = QColor(164, 68, 54, 122 if self.fading_out else 172)
+        painter.setBrush(QBrush(horizon))
+        painter.drawRect(QRectF(0, ground_y, w, h - ground_y))
+
+        ridge_color = QColor(216, 92, 62, 168 if self.fading_out else 220)
+        shadow_color = QColor(93, 40, 42, 128 if self.fading_out else 180)
+        step = 18
+        for index, x in enumerate(range(-step, int(w) + step, step)):
+            wave = math.sin(index * 0.9 + self.frame * 0.025) * 8.0
+            y = ground_y + 8.0 + wave
+            painter.setBrush(QBrush(ridge_color))
+            painter.drawRect(QRectF(x, y, step + 2, h - y))
+            if index % 3 == 0:
+                painter.setBrush(QBrush(shadow_color))
+                painter.drawRect(QRectF(x + 5, y + 14, step * 1.7, 5))
+            if index % 5 == 0:
+                painter.setBrush(QBrush(QColor(255, 160, 95, 95)))
+                painter.drawRect(QRectF(x + 8, y + 5, 6, 2))
+
+    def _paint_meteors(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for meteor in self.meteors:
+            r, g, b = meteor["color"]
+            history = meteor["trail"]
+            for index, (x, y) in enumerate(history):
+                ratio = (index + 1) / max(1, len(history))
+                alpha = int(meteor["alpha"] * 0.50 * ratio)
+                size = max(1.0, meteor["size"] * ratio * 0.72)
+                painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+                painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+
+            x = meteor["x"]
+            y = meteor["y"]
+            size = meteor["size"] + math.sin(meteor["phase"]) * 0.7
+            painter.setBrush(QBrush(QColor(r, g, b, meteor["alpha"])))
+            painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+            painter.setBrush(QBrush(QColor(255, 250, 210, min(255, meteor["alpha"] + 20))))
+            painter.drawRect(QRectF(round(x - size * 0.22), round(y - size * 0.22), max(2.0, size * 0.45), max(2.0, size * 0.45)))
+
+    def _paint_explosions(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for particle in self.explosions:
+            life_ratio = max(0.0, min(1.0, particle["life"] / particle["max_life"]))
+            alpha = int(particle["alpha"] * life_ratio)
+            if alpha <= 0:
+                continue
+            r, g, b = particle["color"]
+            size = particle["size"] * (0.9 + (1.0 - life_ratio) * 1.4)
+            painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+            painter.drawRect(QRectF(round(particle["x"] - size * 0.5), round(particle["y"] - size * 0.5), size, size))
+
+            if life_ratio > 0.62:
+                flash_size = size * 2.4
+                painter.setBrush(QBrush(QColor(255, 244, 188, int(alpha * 0.36))))
+                painter.drawRect(QRectF(round(particle["x"] - flash_size * 0.5), round(particle["y"] - flash_size * 0.5), flash_size, flash_size))
 
     def _border_position(self, progress):
         w = max(1, self.width())
