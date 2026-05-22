@@ -59,11 +59,13 @@ class AudioConfig:
 
 @dataclass(frozen=True)
 class HotkeyConfig:
+    tap_gap_threshold: float = 0.5
     hold_threshold: float = 1.0
 
 
 AUDIO = AudioConfig()
 HOTKEY = HotkeyConfig()
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ru").strip() or None
 COST_FILE = os.path.expanduser("~/.openai_voice_costs.json")
 LOCK_FILE = os.path.expanduser("~/.whisper_dictation.lock")
 EFFECT_PREF_FILE = os.path.expanduser("~/.whisper_dictation_effect.json")
@@ -176,7 +178,7 @@ class LogWindow(QWidget):
 class VoiceMeterOverlay(QWidget):
     tick_ms = 33
     max_particles = 118
-    max_edge_particles = 96
+    max_edge_particles = 180
 
     def __init__(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
@@ -306,11 +308,11 @@ class VoiceMeterOverlay(QWidget):
         if self.fading_out or level < 0.006:
             self.edge_spawn_budget = 0.0
         elif self.mode == "processing":
-            self.edge_spawn_budget += 0.16 + level * 1.4
+            self.edge_spawn_budget += 0.28 + level * 2.8
         else:
-            self.edge_spawn_budget += 0.22 + level * level * 4.8
+            self.edge_spawn_budget += 0.55 + level * 8.5 + level * level * 10.0
 
-        spawn_cap = 4 if self.mode == "processing" else 7
+        spawn_cap = 6 if self.mode == "processing" else 14
         spawn_count = min(
             int(self.edge_spawn_budget),
             spawn_cap,
@@ -340,8 +342,8 @@ class VoiceMeterOverlay(QWidget):
         w = max(1, self.width())
         h = max(1, self.height())
         edge = random.choice(("top", "right", "bottom", "left"))
-        margin = random.uniform(3.0, 18.0)
-        speed = random.uniform(0.75, 1.75) + level * random.uniform(1.4, 3.6)
+        margin = random.uniform(2.0, 28.0)
+        speed = random.uniform(0.95, 2.45) + level * random.uniform(2.2, 5.2)
 
         if edge == "top":
             x = random.uniform(0, w)
@@ -373,7 +375,7 @@ class VoiceMeterOverlay(QWidget):
                 (226, 240, 255),
             )
         )
-        life = random.randint(46, 92) + int(level * 30)
+        life = random.randint(62, 118) + int(level * 42)
         self.edge_particles.append(
             {
                 "x": x,
@@ -383,9 +385,9 @@ class VoiceMeterOverlay(QWidget):
                 "life": life,
                 "max_life": life,
                 "color": color,
-                "alpha": random.randint(120, 220),
-                "size": random.choice((1.0, 1.5, 2.0, 2.5)),
-                "trail": random.uniform(10.0, 24.0) + level * 18.0,
+                "alpha": random.randint(180, 255),
+                "size": random.choice((1.5, 2.0, 2.5, 3.0, 3.5)),
+                "trail": random.uniform(18.0, 42.0) + level * 34.0,
                 "phase": random.uniform(0.0, math.tau),
                 "phase_speed": random.uniform(0.035, 0.09),
                 "wave": random.uniform(0.02, 0.18) + level * 0.18,
@@ -1266,8 +1268,11 @@ class AudioWorker(QThread):
                 wav_file.writeframes(b"".join(frames))
 
             logger.info("Sending audio to Whisper; estimated cost $%.5f", cost)
+            request_kwargs = {"model": "whisper-1", "timeout": 30.0}
+            if WHISPER_LANGUAGE:
+                request_kwargs["language"] = WHISPER_LANGUAGE
             with open(temp_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file, timeout=30.0)
+                transcript = client.audio.transcriptions.create(file=audio_file, **request_kwargs)
 
             if self.is_cancelled:
                 logger.info("Transcription result discarded after cancellation")
@@ -1416,6 +1421,7 @@ class StatusBarApp(QSystemTrayIcon):
         self.state = "idle"
         self.frame = 0
         self.last_shift = False
+        self.last_shift_release_time = 0.0
         self.shift_press_time = 0.0
         self.waiting_for_hold = False
         self.event_monitors = []
@@ -1609,9 +1615,10 @@ class StatusBarApp(QSystemTrayIcon):
                 self.waiting_for_hold = False
             else:
                 self.shift_press_time = now
-                self.waiting_for_hold = True
+                self.waiting_for_hold = (now - self.last_shift_release_time) < HOTKEY.tap_gap_threshold
 
         elif not is_shift and self.last_shift:
+            self.last_shift_release_time = now
             self.waiting_for_hold = False
 
         elif is_shift and self.last_shift and self.waiting_for_hold and self.state in ("idle", "done"):
