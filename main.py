@@ -71,7 +71,6 @@ LOCK_FILE = os.path.expanduser("~/.whisper_dictation.lock")
 EFFECT_PREF_FILE = os.path.expanduser("~/.whisper_dictation_effect.json")
 KEY_CODE_V = 9
 CG_EVENT_FLAG_MASK_COMMAND = 1 << 20
-NSEVENT_MASK_FLAGS_CHANGED = 1 << 12
 
 logger = logging.getLogger("WhisperDictation")
 logger.setLevel(logging.INFO)
@@ -213,6 +212,7 @@ class VoiceMeterOverlay(QWidget):
         self.fading_out = False
         self._cover_current_screen()
         self._seed_border_comets()
+        self._seed_meteor_scene()
         self.show()
         self._apply_macos_window_level()
         self.update()
@@ -257,7 +257,7 @@ class VoiceMeterOverlay(QWidget):
             target_level = 0.12 + math.sin(self.frame * 0.055) * 0.025
             smoothing = 0.075
         else:
-            target_level = self.level
+            target_level = max(self.level, 0.16)
             smoothing = 0.88 if target_level > self.display_level else 0.28
 
         self.display_level = self.display_level * (1.0 - smoothing) + target_level * smoothing
@@ -437,6 +437,17 @@ class VoiceMeterOverlay(QWidget):
             return
         for index in range(8):
             self.border_comets.append(self._new_border_comet(index / 8.0))
+
+    def _seed_meteor_scene(self):
+        if self.meteors or self.explosions:
+            return
+        for _ in range(10):
+            self._spawn_meteor(0.28)
+            meteor = self.meteors[-1]
+            meteor["y"] += random.uniform(20.0, self.height() * 0.38)
+        ground_y = self._ground_y()
+        for x in (self.width() * 0.22, self.width() * 0.55, self.width() * 0.82):
+            self._spawn_explosion(x, ground_y - random.uniform(4.0, 16.0), (255, 150, 80), 0.85)
 
     def _new_border_comet(self, progress=None):
         return {
@@ -1713,7 +1724,6 @@ class StatusBarApp(QSystemTrayIcon):
         self.last_shift_release_time = 0.0
         self.shift_press_time = 0.0
         self.waiting_for_hold = False
-        self.event_monitors = []
         self.paste_controller = PasteController()
         self.effect_key = self._load_effect_key()
         self.effect_actions = {}
@@ -1821,38 +1831,9 @@ class StatusBarApp(QSystemTrayIcon):
         self.icon_timer.timeout.connect(self.update_icon)
         self.icon_timer.start(33)
 
-        self._setup_shift_monitors()
-
         self.key_timer = QTimer()
         self.key_timer.timeout.connect(self.check_keys)
-        self.key_timer.start(120)
-
-    def _setup_shift_monitors(self):
-        def handle_flags_changed(event):
-            try:
-                self._handle_shift_state(bool(event.modifierFlags() & NSEventModifierFlagShift))
-            except Exception as exc:
-                logger.warning("Shift event monitor failed: %s", exc)
-            return event
-
-        try:
-            global_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                NSEVENT_MASK_FLAGS_CHANGED,
-                handle_flags_changed,
-            )
-            if global_monitor is not None:
-                self.event_monitors.append(global_monitor)
-
-            local_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-                NSEVENT_MASK_FLAGS_CHANGED,
-                handle_flags_changed,
-            )
-            if local_monitor is not None:
-                self.event_monitors.append(local_monitor)
-
-            logger.info("Shift event monitors installed: %s", len(self.event_monitors))
-        except Exception as exc:
-            logger.warning("Could not install Shift event monitors; timer fallback remains active: %s", exc)
+        self.key_timer.start(50)
 
     def _create_worker(self):
         self.worker = AudioWorker()
