@@ -197,6 +197,7 @@ class VoiceMeterOverlay(QWidget):
         self.fading_out = False
         self.particles = []
         self.edge_particles = []
+        self.border_comets = []
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -206,6 +207,7 @@ class VoiceMeterOverlay(QWidget):
     def show_meter(self):
         self.fading_out = False
         self._cover_current_screen()
+        self._seed_border_comets()
         self.show()
         self._apply_macos_window_level()
         self.update()
@@ -215,7 +217,7 @@ class VoiceMeterOverlay(QWidget):
         self.spawn_budget = 0.0
         self.edge_spawn_budget = 0.0
         self.fading_out = True
-        if not self.particles and not self.edge_particles:
+        if not self.particles and not self.edge_particles and not self.border_comets:
             self.fading_out = False
             self.hide()
 
@@ -238,7 +240,7 @@ class VoiceMeterOverlay(QWidget):
             self.setGeometry(screen.geometry())
 
     def _animate(self):
-        if not self.isVisible() and not self.particles and not self.edge_particles:
+        if not self.isVisible() and not self.particles and not self.edge_particles and not self.border_comets:
             return
 
         self.frame += 1
@@ -255,6 +257,7 @@ class VoiceMeterOverlay(QWidget):
         self.display_level = self.display_level * (1.0 - smoothing) + target_level * smoothing
         self._update_particles()
         self._update_edge_particles()
+        self._update_border_comets()
         if self.isVisible():
             self.update()
 
@@ -299,9 +302,46 @@ class VoiceMeterOverlay(QWidget):
                 next_particles.append(particle)
 
         self.particles = next_particles[-self.max_particles :]
-        if self.fading_out and not self.particles and not self.edge_particles:
+        if self.fading_out and not self.particles and not self.edge_particles and not self.border_comets:
             self.fading_out = False
             self.hide()
+
+    def _seed_border_comets(self):
+        if self.border_comets:
+            return
+        for index in range(8):
+            self.border_comets.append(self._new_border_comet(index / 8.0))
+
+    def _new_border_comet(self, progress=None):
+        return {
+            "progress": random.random() if progress is None else progress,
+            "speed": random.uniform(0.0012, 0.0028),
+            "size": random.choice((2.0, 2.5, 3.0, 3.5)),
+            "color": random.choice(((88, 248, 255), (145, 255, 214), (255, 238, 148), (255, 142, 222), (226, 240, 255))),
+            "alpha": random.randint(140, 230),
+            "trail": random.uniform(26.0, 56.0),
+            "phase": random.uniform(0.0, math.tau),
+            "clockwise": random.choice((True, False)),
+        }
+
+    def _update_border_comets(self):
+        if self.mode not in ("recording", "processing") and not self.fading_out:
+            return
+
+        if not self.border_comets and not self.fading_out:
+            self._seed_border_comets()
+
+        next_comets = []
+        for comet in self.border_comets:
+            speed_boost = 1.0 + self.display_level * 1.6
+            comet["progress"] = (comet["progress"] + comet["speed"] * speed_boost) % 1.0
+            comet["phase"] += 0.045
+            if self.fading_out:
+                comet["alpha"] -= 5
+            if comet["alpha"] > 0:
+                next_comets.append(comet)
+
+        self.border_comets = next_comets
 
     def _update_edge_particles(self):
         level = self.display_level
@@ -500,6 +540,7 @@ class VoiceMeterOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
 
+        self._paint_border_comets(painter)
         self._paint_edge_particles(painter)
 
         for particle in self.particles:
@@ -540,6 +581,53 @@ class VoiceMeterOverlay(QWidget):
                 painter.drawRect(QRectF(round(x + math.sin(particle["phase"]) * 4.0), round(y + math.cos(particle["phase"]) * 4.0), 1.0, 1.0))
 
         painter.end()
+
+    def _border_position(self, progress):
+        w = max(1, self.width())
+        h = max(1, self.height())
+        perimeter = 2 * (w + h)
+        distance = (progress % 1.0) * perimeter
+
+        if distance < w:
+            return distance, 10.0, 1.0, 0.0
+        distance -= w
+        if distance < h:
+            return w - 10.0, distance, 0.0, 1.0
+        distance -= h
+        if distance < w:
+            return w - distance, h - 10.0, -1.0, 0.0
+        distance -= w
+        return 10.0, h - distance, 0.0, -1.0
+
+    def _paint_border_comets(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for comet in self.border_comets:
+            progress = comet["progress"] if comet["clockwise"] else 1.0 - comet["progress"]
+            x, y, dx, dy = self._border_position(progress)
+            x += math.sin(comet["phase"]) * 4.0
+            y += math.cos(comet["phase"] * 0.9) * 4.0
+            alpha = max(0, min(255, int(comet["alpha"] * (0.72 + self.display_level * 0.34))))
+            if alpha <= 0:
+                continue
+
+            r, g, b = comet["color"]
+            size = comet["size"] + self.display_level * 2.0
+            trail = comet["trail"] * (0.9 + self.display_level)
+            for step in range(1, 9):
+                ratio = step / 9
+                tail_alpha = int(alpha * 0.52 * (1.0 - ratio))
+                if tail_alpha <= 2:
+                    continue
+                tail_x = x - dx * trail * ratio
+                tail_y = y - dy * trail * ratio
+                painter.setBrush(QBrush(QColor(r, g, b, tail_alpha)))
+                painter.drawRect(QRectF(round(tail_x), round(tail_y), max(1.0, size - ratio * 1.2), max(1.0, size - ratio * 1.2)))
+
+            painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+            painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+            painter.setBrush(QBrush(QColor(255, 255, 245, int(alpha * 0.62))))
+            painter.drawRect(QRectF(round(x - 1), round(y - size - 1), 2.0, max(1.0, size)))
+            painter.drawRect(QRectF(round(x - size - 1), round(y - 1), max(1.0, size), 2.0))
 
     def _paint_edge_particles(self, painter):
         painter.setPen(Qt.PenStyle.NoPen)
@@ -944,6 +1032,8 @@ class CosmicSpecterOverlay(QWidget):
             if self.fading_out:
                 specter["exit_age"] = specter.get("exit_age", 0) + 1
             else:
+                if specter.get("enter_age", 0) < specter.get("enter_duration", 1):
+                    specter["enter_age"] = specter.get("enter_age", 0) + 1
                 specter["age"] += 1
             specter["bob"] += 0.06
             if self.fading_out:
@@ -1034,12 +1124,14 @@ class CosmicSpecterOverlay(QWidget):
             {
                 "side": side,
                 "anchor": anchor,
-                "age": int(random.uniform(36, 130)) if immediate else 0,
+                "age": int(random.uniform(46, 132)) if immediate else 0,
                 "duration": random.randint(260, 430),
                 "peek": size * random.uniform(1.08, 1.34),
                 "drift": random.uniform(-24, 24),
                 "size": size,
                 "bob": random.uniform(0, math.tau),
+                "enter_age": 0,
+                "enter_duration": random.randint(30, 48) if immediate else random.randint(22, 36),
                 "tint": random.choice((QColor(180, 251, 255, 168), QColor(214, 180, 255, 154), QColor(255, 178, 232, 146))),
             }
         )
@@ -1114,6 +1206,12 @@ class CosmicSpecterOverlay(QWidget):
                 outward = 0.0
                 peek_wave = math.sin(progress * math.pi)
                 fade = min(1.0, peek_wave * 1.9)
+
+            if not specter.get("leaving"):
+                enter_progress = max(0.0, min(1.0, specter.get("enter_age", 0) / specter.get("enter_duration", 1)))
+                enter_ease = enter_progress * enter_progress * (3.0 - 2.0 * enter_progress)
+                peek_wave *= enter_ease
+                fade *= enter_ease
 
             offset = specter["peek"] * peek_wave
             if specter["side"] == "left":
