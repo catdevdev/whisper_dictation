@@ -1470,6 +1470,7 @@ class PixelCometOverlay(QWidget):
         self.ground_chunks = []
         self.ground_breaking = False
         self.ground_break_age = 0
+        self.outro_done = False
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._animate)
@@ -1480,6 +1481,7 @@ class PixelCometOverlay(QWidget):
         self.mode = mode
         if mode == "recording":
             self.fading_out = False
+            self.outro_done = False
             self.ground_breaking = False
             self.ground_break_age = 0
             self.ground_chunks = []
@@ -1495,7 +1497,7 @@ class PixelCometOverlay(QWidget):
             self.spawn_budget = 0.0
             self.fading_out = True
             self._start_ground_breakup()
-            if self._has_visible_scene():
+            if not self.outro_done and self._has_visible_scene():
                 self.show()
                 self._apply_macos_window_level()
                 self.raise_()
@@ -1504,13 +1506,12 @@ class PixelCometOverlay(QWidget):
             self.level = 0.0
             self.spawn_budget = 0.0
             self.fading_out = True
-            self._start_ground_breakup()
             if not self._has_visible_scene():
                 self.fading_out = False
                 self.hide()
 
     def prepare_for_paste(self):
-        if self.isVisible() or self._has_visible_scene():
+        if not self.outro_done and (self.isVisible() or self._has_visible_scene()):
             self.set_mode("processing")
             QApplication.processEvents()
 
@@ -1525,7 +1526,7 @@ class PixelCometOverlay(QWidget):
             self.setGeometry(screen.geometry())
 
     def _animate(self):
-        if self.mode in ("recording", "processing"):
+        if self.mode == "recording":
             if not self.isVisible():
                 self.show()
                 self._apply_macos_window_level()
@@ -1534,6 +1535,10 @@ class PixelCometOverlay(QWidget):
                 self._cover_current_screen()
                 self._apply_macos_window_level()
                 self.raise_()
+        elif self.mode == "processing" and self.isVisible() and self.frame % 24 == 0:
+            self._cover_current_screen()
+            self._apply_macos_window_level()
+            self.raise_()
 
         if not self.isVisible() and not self._has_visible_scene():
             return
@@ -1578,18 +1583,27 @@ class PixelCometOverlay(QWidget):
     def _seed_structures(self):
         if self.structures:
             return
-        anchors = (0.08, 0.17, 0.29, 0.43, 0.58, 0.72, 0.84, 0.93)
-        self.structures = [
-            {
-                "x_ratio": x_ratio + random.uniform(-0.015, 0.015),
-                "kind": random.choice(("dome", "tower", "dish", "gate")),
-                "height": random.uniform(14.0, 32.0),
-                "width": random.uniform(14.0, 34.0),
-                "phase": random.uniform(0.0, math.tau),
-                "color": random.choice(((120, 238, 255), (174, 126, 255), (104, 255, 190), (255, 202, 116))),
-            }
-            for x_ratio in anchors
-        ]
+        rows = (
+            (0.08, (0.08, 0.22, 0.37, 0.56, 0.73, 0.90), 0.68),
+            (0.38, (0.13, 0.31, 0.48, 0.64, 0.82), 0.86),
+            (0.70, (0.06, 0.24, 0.41, 0.59, 0.76, 0.94), 1.08),
+        )
+        self.structures = []
+        for depth, anchors, scale in rows:
+            for x_ratio in anchors:
+                self.structures.append(
+                    {
+                        "x_ratio": x_ratio + random.uniform(-0.018, 0.018),
+                        "depth": depth + random.uniform(-0.035, 0.035),
+                        "scale": scale + random.uniform(-0.08, 0.10),
+                        "kind": random.choice(("dome", "tower", "dish", "gate")),
+                        "height": random.uniform(12.0, 27.0),
+                        "width": random.uniform(13.0, 31.0),
+                        "phase": random.uniform(0.0, math.tau),
+                        "color": random.choice(((120, 238, 255), (174, 126, 255), (104, 255, 190), (255, 202, 116))),
+                    }
+                )
+        self.structures.sort(key=lambda structure: structure["depth"])
 
     def _update_meteors(self):
         level = self.display_level
@@ -1617,8 +1631,9 @@ class PixelCometOverlay(QWidget):
             if len(meteor["history"]) > meteor["history_limit"]:
                 meteor["history"].pop(0)
 
-            if meteor["y"] >= ground_y - meteor["impact_offset"]:
-                self._spawn_burst(meteor["x"], ground_y - meteor["impact_offset"], meteor["power"])
+            impact_y = ground_y + meteor["impact_depth"] * max(1.0, self.height() - ground_y) - meteor["impact_offset"]
+            if meteor["y"] >= impact_y:
+                self._spawn_burst(meteor["x"], impact_y, meteor["power"])
                 continue
 
             if -150 < meteor["x"] < self.width() + 150 and meteor["y"] < self.height() + 90:
@@ -1669,6 +1684,7 @@ class PixelCometOverlay(QWidget):
                 "phase": random.uniform(0.0, math.tau),
                 "age": 0,
                 "impact_offset": random.uniform(0.0, 24.0),
+                "impact_depth": random.uniform(0.06, 0.96),
                 "power": random.uniform(0.8, 1.35) + level * 1.7,
             }
         )
@@ -1712,6 +1728,8 @@ class PixelCometOverlay(QWidget):
 
         self.ground_breaking = True
         self.ground_break_age = 0
+        self.spawn_budget = 0.0
+        self.meteors = []
         w = max(1, self.width())
         h = max(1, self.height())
         ground_y = self._ground_y()
@@ -1737,11 +1755,13 @@ class PixelCometOverlay(QWidget):
 
         for structure in self.structures:
             base_x = structure["x_ratio"] * w
+            base_y = ground_y + structure["depth"] * max(1.0, h - ground_y)
+            scale = structure["scale"]
             for _ in range(5):
                 self.ground_chunks.append(
                     {
-                        "x": base_x + random.uniform(-structure["width"] * 0.55, structure["width"] * 0.55),
-                        "y": ground_y - random.uniform(4.0, structure["height"]),
+                        "x": base_x + random.uniform(-structure["width"] * scale * 0.55, structure["width"] * scale * 0.55),
+                        "y": base_y - random.uniform(2.0, structure["height"] * scale),
                         "w": random.uniform(3.0, 8.0),
                         "h": random.uniform(3.0, 9.0),
                         "vx": random.uniform(-2.6, 2.6),
@@ -1777,6 +1797,7 @@ class PixelCometOverlay(QWidget):
             self.ground_breaking = False
         if self.fading_out and not self._has_visible_scene():
             self.fading_out = False
+            self.outro_done = True
             self.hide()
 
     def _apply_macos_window_level(self):
@@ -1806,8 +1827,9 @@ class PixelCometOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setPen(Qt.PenStyle.NoPen)
-        self._paint_edge_stars(painter)
-        self._paint_ground(painter)
+        if not self.outro_done:
+            self._paint_edge_stars(painter)
+            self._paint_ground(painter)
         self._paint_meteors(painter)
         self._paint_bursts(painter)
         painter.end()
@@ -1855,10 +1877,13 @@ class PixelCometOverlay(QWidget):
 
     def _paint_structures(self, painter, ground_y):
         w = self.width()
+        ground_height = max(1.0, self.height() - ground_y)
         for structure in self.structures:
             x = structure["x_ratio"] * w
-            width = structure["width"]
-            height = structure["height"]
+            y_base = ground_y + structure["depth"] * ground_height
+            scale = structure["scale"]
+            width = structure["width"] * scale
+            height = structure["height"] * scale
             r, g, b = structure["color"]
             glow = 90 + int((math.sin(self.frame * 0.08 + structure["phase"]) + 1.0) * 45)
             body = QColor(78, 54, 94, 210)
@@ -1866,30 +1891,30 @@ class PixelCometOverlay(QWidget):
             painter.setBrush(QBrush(body))
 
             if structure["kind"] == "dome":
-                painter.drawRect(QRectF(x - width * 0.5, ground_y - height * 0.45, width, height * 0.45))
-                painter.drawRect(QRectF(x - width * 0.32, ground_y - height * 0.76, width * 0.64, height * 0.36))
+                painter.drawRect(QRectF(x - width * 0.5, y_base - height * 0.45, width, height * 0.45))
+                painter.drawRect(QRectF(x - width * 0.32, y_base - height * 0.76, width * 0.64, height * 0.36))
                 painter.setBrush(QBrush(light))
-                painter.drawRect(QRectF(x - 2, ground_y - height * 0.9, 4, 5))
-                painter.drawRect(QRectF(x - width * 0.24, ground_y - height * 0.35, 4, 3))
-                painter.drawRect(QRectF(x + width * 0.12, ground_y - height * 0.35, 4, 3))
+                painter.drawRect(QRectF(x - 2, y_base - height * 0.9, 4, 5))
+                painter.drawRect(QRectF(x - width * 0.24, y_base - height * 0.35, 4, 3))
+                painter.drawRect(QRectF(x + width * 0.12, y_base - height * 0.35, 4, 3))
             elif structure["kind"] == "tower":
-                painter.drawRect(QRectF(x - width * 0.16, ground_y - height, width * 0.32, height))
-                painter.drawRect(QRectF(x - width * 0.34, ground_y - height * 0.72, width * 0.68, 5))
+                painter.drawRect(QRectF(x - width * 0.16, y_base - height, width * 0.32, height))
+                painter.drawRect(QRectF(x - width * 0.34, y_base - height * 0.72, width * 0.68, 5))
                 painter.setBrush(QBrush(light))
-                painter.drawRect(QRectF(x - 2, ground_y - height - 6, 4, 6))
-                painter.drawRect(QRectF(x - width * 0.11, ground_y - height * 0.42, width * 0.22, 4))
+                painter.drawRect(QRectF(x - 2, y_base - height - 6, 4, 6))
+                painter.drawRect(QRectF(x - width * 0.11, y_base - height * 0.42, width * 0.22, 4))
             elif structure["kind"] == "dish":
-                painter.drawRect(QRectF(x - 2, ground_y - height * 0.62, 4, height * 0.62))
-                painter.drawRect(QRectF(x - width * 0.42, ground_y - height * 0.86, width * 0.84, 5))
-                painter.drawRect(QRectF(x - width * 0.30, ground_y - height * 0.72, width * 0.60, 5))
+                painter.drawRect(QRectF(x - 2, y_base - height * 0.62, 4, height * 0.62))
+                painter.drawRect(QRectF(x - width * 0.42, y_base - height * 0.86, width * 0.84, 5))
+                painter.drawRect(QRectF(x - width * 0.30, y_base - height * 0.72, width * 0.60, 5))
                 painter.setBrush(QBrush(light))
-                painter.drawRect(QRectF(x + width * 0.32, ground_y - height * 0.96, 7, 3))
+                painter.drawRect(QRectF(x + width * 0.32, y_base - height * 0.96, 7, 3))
             else:
-                painter.drawRect(QRectF(x - width * 0.48, ground_y - height * 0.88, 5, height * 0.88))
-                painter.drawRect(QRectF(x + width * 0.34, ground_y - height * 0.88, 5, height * 0.88))
-                painter.drawRect(QRectF(x - width * 0.48, ground_y - height * 0.88, width * 0.9, 5))
+                painter.drawRect(QRectF(x - width * 0.48, y_base - height * 0.88, 5, height * 0.88))
+                painter.drawRect(QRectF(x + width * 0.34, y_base - height * 0.88, 5, height * 0.88))
+                painter.drawRect(QRectF(x - width * 0.48, y_base - height * 0.88, width * 0.9, 5))
                 painter.setBrush(QBrush(light))
-                painter.drawRect(QRectF(x - width * 0.20, ground_y - height * 0.70, width * 0.40, 4))
+                painter.drawRect(QRectF(x - width * 0.20, y_base - height * 0.70, width * 0.40, 4))
 
     def _paint_ground_chunks(self, painter):
         for chunk in self.ground_chunks:
