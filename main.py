@@ -10,6 +10,7 @@ import array
 import ctypes
 import objc
 import random
+import subprocess
 import pyaudio
 import pyperclip
 from datetime import datetime
@@ -655,7 +656,8 @@ class StatusBarApp(QSystemTrayIcon):
             self._copy_to_clipboard(text)
             logger.info("📋 Text copied to clipboard.")
             time.sleep(0.2)
-            self._send_cmd_v()
+            if not self._paste_via_edit_menu():
+                self._send_cmd_v()
             logger.info("⌨️ Pasted (Cmd+V).")
         except Exception as e:
             logger.error(f"❌ Paste Error: {e}")
@@ -666,6 +668,35 @@ class StatusBarApp(QSystemTrayIcon):
         pasteboard.clearContents()
         if not pasteboard.setString_forType_(text, NSPasteboardTypeString):
             raise RuntimeError("NSPasteboard rejected text")
+
+    def _paste_via_edit_menu(self):
+        script = """
+        tell application "System Events"
+            set targetProcess to first application process whose frontmost is true
+            set editMenuNames to {"Edit", "Правка", "Редактирование", "Редагування"}
+            set pasteItemNames to {"Paste", "Вставить", "Вставити"}
+
+            tell targetProcess
+                repeat with editMenuName in editMenuNames
+                    if exists menu editMenuName of menu bar 1 then
+                        repeat with pasteItemName in pasteItemNames
+                            if exists menu item pasteItemName of menu editMenuName of menu bar 1 then
+                                click menu item pasteItemName of menu editMenuName of menu bar 1
+                                return "ok"
+                            end if
+                        end repeat
+                    end if
+                end repeat
+            end tell
+        end tell
+        error "Paste menu item not found"
+        """
+        try:
+            subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError as exc:
+            logger.warning(f"Menu paste failed, falling back to Cmd+V: {exc}")
+            return False
 
     def _send_cmd_v(self):
         app_services = ctypes.cdll.LoadLibrary(
