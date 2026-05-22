@@ -693,15 +693,28 @@ class CosmicSpecterOverlay(QWidget):
 
     def set_mode(self, mode):
         self.mode = mode
-        if mode in ("recording", "processing"):
+        if mode == "recording":
             self.fading_out = False
             self._cover_current_screen()
-            if mode == "recording":
-                self._seed_side_specters()
+            self._seed_side_specters()
             self.show()
             self._apply_macos_window_level()
             self.raise_()
             self.update()
+        elif mode == "processing":
+            self.level = 0.0
+            self.spawn_budget = 0.0
+            self.specter_budget = 0.0
+            self._start_specter_exit()
+            self.fading_out = True
+            if self.particles or self.specters:
+                self.show()
+                self._apply_macos_window_level()
+                self.raise_()
+                self.update()
+            else:
+                self.fading_out = False
+                self.hide()
         else:
             self.level = 0.0
             self.spawn_budget = 0.0
@@ -711,6 +724,11 @@ class CosmicSpecterOverlay(QWidget):
             if not self.particles and not self.specters:
                 self.fading_out = False
                 self.hide()
+
+    def prepare_for_paste(self):
+        if self.isVisible() or self.particles or self.specters:
+            self.set_mode("processing")
+            QApplication.processEvents()
 
     def set_level(self, level):
         if self.mode != "recording":
@@ -1480,8 +1498,12 @@ class StatusBarApp(QSystemTrayIcon):
             self._replace_worker()
             return
         try:
-            self.voice_meter.hide()
-            QApplication.processEvents()
+            prepare_for_paste = getattr(self.voice_meter, "prepare_for_paste", None)
+            if prepare_for_paste is not None:
+                prepare_for_paste()
+            else:
+                self.voice_meter.hide()
+                QApplication.processEvents()
             self.paste_controller.paste(text)
             self.set_state("done")
             QTimer.singleShot(1500, lambda: self.set_state("idle"))
