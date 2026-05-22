@@ -18,12 +18,14 @@ import pyaudio
 import pyperclip
 from AppKit import (
     NSApplication,
+    NSApplicationActivateIgnoringOtherApps,
     NSEvent,
     NSEventModifierFlagShift,
     NSPasteboard,
     NSPasteboardTypeString,
     NSScreenSaverWindowLevel,
     NSStatusBar,
+    NSWorkspace,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorIgnoresCycle,
@@ -32,7 +34,7 @@ from AppKit import (
 from dotenv import load_dotenv
 from openai import OpenAI
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap, QRadialGradient
 from PyQt6.QtWidgets import QApplication, QLabel, QMenu, QPlainTextEdit, QSystemTrayIcon, QVBoxLayout, QWidget
 
 
@@ -65,6 +67,7 @@ AUDIO = AudioConfig()
 HOTKEY = HotkeyConfig()
 COST_FILE = os.path.expanduser("~/.openai_voice_costs.json")
 LOCK_FILE = os.path.expanduser("~/.whisper_dictation.lock")
+EFFECT_PREF_FILE = os.path.expanduser("~/.whisper_dictation_effect.json")
 KEY_CODE_V = 9
 CG_EVENT_FLAG_MASK_COMMAND = 1 << 20
 NSEVENT_MASK_FLAGS_CHANGED = 1 << 12
@@ -661,6 +664,327 @@ class SimpleVoiceMeterOverlay(QWidget):
         painter.end()
 
 
+class CosmicSpecterOverlay(QWidget):
+    tick_ms = 33
+    max_particles = 360
+    max_specters = 9
+
+    def __init__(self):
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
+        super().__init__(None, flags)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self.mode = "idle"
+        self.level = 0.0
+        self.display_level = 0.0
+        self.frame = 0
+        self.spawn_budget = 0.0
+        self.specter_budget = 0.0
+        self.fading_out = False
+        self.particles = []
+        self.specters = []
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._animate)
+        self.timer.start(self.tick_ms)
+        self.hide()
+
+    def set_mode(self, mode):
+        self.mode = mode
+        if mode in ("recording", "processing"):
+            self.fading_out = False
+            self._cover_current_screen()
+            if mode == "recording":
+                self._seed_side_specters()
+            self.show()
+            self._apply_macos_window_level()
+            self.raise_()
+            self.update()
+        else:
+            self.level = 0.0
+            self.spawn_budget = 0.0
+            self.specter_budget = 0.0
+            self.fading_out = True
+            if not self.particles and not self.specters:
+                self.fading_out = False
+                self.hide()
+
+    def set_level(self, level):
+        if self.mode != "recording":
+            return
+        self.level = max(0.0, min(1.0, float(level)))
+
+    def _cover_current_screen(self):
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen:
+            self.setGeometry(screen.geometry())
+
+    def _animate(self):
+        if not self.isVisible() and not self.particles and not self.specters:
+            return
+
+        self.frame += 1
+        target = 0.0 if self.fading_out else self.level
+        if self.mode == "processing" and not self.fading_out:
+            target = 0.16 + math.sin(self.frame * 0.055) * 0.035
+        smoothing = 0.55 if target > self.display_level else 0.18
+        self.display_level = self.display_level * (1.0 - smoothing) + target * smoothing
+        self._update_particles()
+        self._update_specters()
+        if self.isVisible():
+            self.update()
+
+    def _update_particles(self):
+        level = self.display_level
+        if self.fading_out or level < 0.004:
+            self.spawn_budget = 0.0
+        else:
+            self.spawn_budget += 0.72 + level * 18.0
+
+        spawn_count = min(int(self.spawn_budget), 16, self.max_particles - len(self.particles))
+        self.spawn_budget -= spawn_count
+        for _ in range(max(0, spawn_count)):
+            self._spawn_particle(level)
+
+        next_particles = []
+        edge_band = max(110, min(max(1, self.width()), max(1, self.height())) * 0.16)
+        for particle in self.particles:
+            life_decay = 9 if self.fading_out else 1
+            if not self.fading_out and level < 0.018:
+                life_decay = 4
+
+            particle["life"] -= life_decay
+            particle["x"] += particle["vx"]
+            particle["y"] += particle["vy"]
+            particle["vx"] += math.sin((self.frame + particle["phase"]) * 0.045) * 0.006
+            particle["vy"] += math.cos((self.frame + particle["phase"]) * 0.04) * 0.006
+            particle["vx"] *= 0.998
+            particle["vy"] *= 0.998
+            particle["size"] *= 0.998
+            near_edge = (
+                particle["y"] <= edge_band
+                if particle["edge"] == "top"
+                else particle["y"] >= self.height() - edge_band
+            )
+            if particle["life"] > 0 and particle["size"] > 0.25 and near_edge:
+                next_particles.append(particle)
+
+        self.particles = next_particles[-self.max_particles :]
+
+    def _update_specters(self):
+        level = self.display_level
+        if self.fading_out or level < 0.004:
+            self.specter_budget = 0.0
+        else:
+            self.specter_budget += 0.018 + level * 0.045
+
+        specter_count = int(self.specter_budget)
+        self.specter_budget -= specter_count
+        if len(self.specters) < self.max_specters:
+            for _ in range(min(specter_count, 2)):
+                self._spawn_specter(level)
+
+        next_specters = []
+        for specter in self.specters:
+            specter["age"] += 8 if self.fading_out else 1
+            specter["bob"] += 0.06
+            if specter["age"] < specter["duration"]:
+                next_specters.append(specter)
+
+        self.specters = next_specters[-self.max_specters :]
+        if self.fading_out and not self.particles and not self.specters:
+            self.fading_out = False
+            self.hide()
+
+    def _spawn_particle(self, level):
+        edge = random.choice(("top", "bottom"))
+        w = max(1, self.width())
+        h = max(1, self.height())
+        margin = 54 + level * 48
+        if edge == "top":
+            source_x = random.uniform(0, w)
+            source_y = random.uniform(0, margin)
+            angle = random.uniform(math.pi * 0.24, math.pi * 0.76)
+        else:
+            source_x = random.uniform(0, w)
+            source_y = h - random.uniform(0, margin)
+            angle = random.uniform(math.pi * 1.24, math.pi * 1.76)
+
+        speed = random.uniform(0.05 + level * 0.18, 0.26 + level * 0.72)
+        palette = random.choice(((98, 245, 255), (172, 112, 255), (255, 88, 202), (130, 255, 184), (255, 238, 154)))
+        alpha = int(random.uniform(90, 180) + level * 70)
+        self.particles.append(
+            {
+                "x": source_x,
+                "y": source_y,
+                "vx": math.cos(angle) * speed,
+                "vy": math.sin(angle) * speed + random.uniform(-0.08, 0.08),
+                "size": random.uniform(0.42, 1.55 + level * 1.1),
+                "life": random.randint(76, 160) + int(level * 48),
+                "max_life": 210,
+                "color": QColor(*palette, min(205, int(alpha * 0.78))),
+                "edge": edge,
+                "phase": random.uniform(0, 360),
+                "sparkle": random.random() < 0.18,
+                "kind": random.choice(("dust", "firefly")),
+            }
+        )
+
+    def _seed_side_specters(self):
+        self.specters = []
+        h = max(1, self.height())
+        anchors = (h * 0.18, h * 0.38, h * 0.62, h * 0.82)
+        for index, anchor in enumerate(anchors):
+            self._spawn_specter(
+                self.display_level,
+                side="left" if index % 2 == 0 else "right",
+                anchor=anchor + random.uniform(-28, 28),
+                immediate=True,
+            )
+        self._spawn_specter(self.display_level, side=random.choice(("left", "right")), anchor=random.uniform(h * 0.26, h * 0.74), immediate=True)
+        self.specter_budget = 0.0
+
+    def _free_specter_anchor(self, side):
+        h = max(1, self.height())
+        for _ in range(12):
+            candidate = random.uniform(h * 0.12, h * 0.88)
+            if all(specter["side"] != side or abs(specter["anchor"] - candidate) > 92 for specter in self.specters):
+                return candidate
+        return random.uniform(h * 0.12, h * 0.88)
+
+    def _spawn_specter(self, level, side=None, anchor=None, immediate=False):
+        side = side or random.choice(("left", "right"))
+        h = max(1, self.height())
+        size = random.uniform(46, 76 + level * 18)
+        anchor = anchor if anchor is not None else self._free_specter_anchor(side)
+        anchor = max(h * 0.1, min(h * 0.9, anchor))
+        self.specters.append(
+            {
+                "side": side,
+                "anchor": anchor,
+                "age": int(random.uniform(36, 130)) if immediate else 0,
+                "duration": random.randint(260, 430),
+                "peek": size * random.uniform(1.08, 1.34),
+                "drift": random.uniform(-24, 24),
+                "size": size,
+                "bob": random.uniform(0, math.tau),
+                "tint": random.choice((QColor(180, 251, 255, 168), QColor(214, 180, 255, 154), QColor(255, 178, 232, 146))),
+            }
+        )
+
+    def _apply_macos_window_level(self):
+        if sys.platform != "darwin":
+            return
+        try:
+            native_view = objc.objc_object(c_void_p=ctypes.c_void_p(int(self.winId())))
+            native_window = native_view.window()
+            if native_window is None:
+                return
+            behavior = (
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorIgnoresCycle
+            )
+            native_window.setLevel_(NSScreenSaverWindowLevel)
+            native_window.setCollectionBehavior_(behavior)
+            native_window.setIgnoresMouseEvents_(True)
+            native_window.setCanHide_(False)
+            native_window.setHidesOnDeactivate_(False)
+            native_window.orderFrontRegardless()
+        except Exception as exc:
+            logger.warning("Cosmic overlay native window setup failed: %s", exc)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_particles(painter)
+        self._paint_specters(painter)
+        painter.end()
+
+    def _paint_particles(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        for particle in self.particles:
+            color = QColor(particle["color"])
+            color.setAlpha(int(color.alpha() * max(0.0, min(1.0, particle["life"] / particle["max_life"]))))
+            if color.alpha() <= 0:
+                continue
+
+            if particle["sparkle"] and color.alpha() > 48:
+                glow = QRadialGradient(QPointF(particle["x"], particle["y"]), particle["size"] * 4.0)
+                glow.setColorAt(0.0, QColor(color.red(), color.green(), color.blue(), int(color.alpha() * 0.62)))
+                glow.setColorAt(0.42, QColor(color.red(), color.green(), color.blue(), int(color.alpha() * 0.18)))
+                glow.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+                painter.setBrush(QBrush(glow))
+                painter.drawEllipse(QPointF(particle["x"], particle["y"]), particle["size"] * 4.0, particle["size"] * 4.0)
+
+            core = QColor(color)
+            core.setAlpha(min(235, color.alpha() + 30))
+            painter.setBrush(QBrush(core))
+            radius = particle["size"] * (0.75 if particle["kind"] == "firefly" else 1.0)
+            painter.drawEllipse(QPointF(particle["x"], particle["y"]), radius, radius)
+
+    def _paint_specters(self, painter):
+        painter.setPen(Qt.PenStyle.NoPen)
+        w = self.width()
+        for specter in self.specters:
+            size = specter["size"]
+            bob = math.sin(specter["bob"]) * size * 0.18
+            progress = max(0.0, min(1.0, specter["age"] / specter["duration"]))
+            peek_wave = math.sin(progress * math.pi)
+            offset = specter["peek"] * peek_wave
+            if specter["side"] == "left":
+                x = -size * 0.56 + offset
+            else:
+                x = w + size * 0.56 - offset
+            y = specter["anchor"] + bob + specter["drift"] * progress
+
+            fade = min(1.0, peek_wave * 1.9)
+            tint = QColor(specter["tint"])
+            tint.setAlpha(int(tint.alpha() * fade))
+            glow = QRadialGradient(QPointF(x, y), size * 1.4)
+            glow.setColorAt(0.0, QColor(tint.red(), tint.green(), tint.blue(), int(tint.alpha() * 0.55)))
+            glow.setColorAt(1.0, QColor(tint.red(), tint.green(), tint.blue(), 0))
+            painter.setBrush(QBrush(glow))
+            painter.drawEllipse(QPointF(x, y), size * 1.4, size * 1.4)
+
+            pixel = max(3.0, size / 7.0)
+            body = QColor(226, 250, 255, min(210, tint.alpha() + 62))
+            eye = QColor(38, 21, 80, min(210, tint.alpha() + 70))
+            painter.setBrush(QBrush(body))
+            painter.drawRect(QRectF(x - pixel * 3, y - pixel * 4, pixel * 6, pixel * 6))
+            painter.drawRect(QRectF(x - pixel * 2, y - pixel * 5, pixel * 4, pixel))
+            painter.drawRect(QRectF(x - pixel * 2, y + pixel * 2, pixel, pixel))
+            painter.drawRect(QRectF(x, y + pixel * 2, pixel, pixel))
+            painter.drawRect(QRectF(x + pixel * 2, y + pixel * 2, pixel, pixel))
+            painter.setBrush(QBrush(eye))
+            painter.drawRect(QRectF(x - pixel * 1.45, y - pixel * 2, pixel * 0.9, pixel * 0.9))
+            painter.drawRect(QRectF(x + pixel * 0.55, y - pixel * 2, pixel * 0.9, pixel * 0.9))
+
+
+class DisabledVoiceMeterOverlay(QObject):
+    def set_mode(self, mode):
+        pass
+
+    def set_level(self, level):
+        pass
+
+    def hide(self):
+        pass
+
+
+EFFECT_OPTIONS = {
+    "specters": ("👻 Cosmic Specters", CosmicSpecterOverlay),
+    "ufo": ("🛸 Pixel UFO Trail", SimpleVoiceMeterOverlay),
+    "comet": ("☄️ Pixel Comet", VoiceMeterOverlay),
+    "off": ("Off", DisabledVoiceMeterOverlay),
+}
+DEFAULT_EFFECT = "specters"
+
+
 class AudioWorker(QThread):
     finished_signal = pyqtSignal(object)
     cost_update_signal = pyqtSignal()
@@ -795,9 +1119,52 @@ class PasteController:
     edit_menu_names = ("Edit", "Правка", "Редактирование", "Редагування")
     paste_item_names = ("Paste", "Вставить", "Вставити")
 
+    def __init__(self):
+        self.target = None
+
+    def remember_target(self):
+        try:
+            frontmost = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if frontmost is None:
+                return
+            pid = int(frontmost.processIdentifier())
+            bundle_id = frontmost.bundleIdentifier() or ""
+            if pid == os.getpid() or bundle_id.startswith("org.python"):
+                return
+            self.target = {
+                "pid": pid,
+                "bundle_id": bundle_id,
+                "name": frontmost.localizedName() or bundle_id or str(pid),
+            }
+            logger.info("Paste target: %s", self.target["name"])
+        except Exception as exc:
+            logger.warning("Could not remember paste target: %s", exc)
+
+    def restore_target(self):
+        if not self.target:
+            return
+        try:
+            workspace = NSWorkspace.sharedWorkspace()
+            target_app = None
+            for app in workspace.runningApplications():
+                if int(app.processIdentifier()) == self.target["pid"]:
+                    target_app = app
+                    break
+            if target_app is None and self.target["bundle_id"]:
+                apps = workspace.runningApplicationsWithBundleIdentifier_(self.target["bundle_id"])
+                if apps:
+                    target_app = apps[0]
+            if target_app is None:
+                return
+            target_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            time.sleep(0.25)
+        except Exception as exc:
+            logger.warning("Could not restore paste target: %s", exc)
+
     def paste(self, text):
         self._copy_to_clipboard(text)
         logger.info("Text copied to clipboard")
+        self.restore_target()
         time.sleep(0.18)
         if not self._paste_via_menu():
             self._send_cmd_v()
@@ -881,7 +1248,7 @@ class NativeStatusItem:
         if self.button is None:
             return
         titles = {
-            "idle": "W",
+            "idle": "🛸",
             "recording": "REC",
             "processing": "...",
             "done": "OK",
@@ -907,9 +1274,12 @@ class StatusBarApp(QSystemTrayIcon):
         self.waiting_for_hold = False
         self.event_monitors = []
         self.paste_controller = PasteController()
+        self.effect_key = self._load_effect_key()
+        self.effect_actions = {}
+        self.worker = None
 
         self.log_window = LogWindow()
-        self.voice_meter = SimpleVoiceMeterOverlay()
+        self.voice_meter = self._create_voice_meter(self.effect_key)
         self._setup_logging()
         self.native_status = NativeStatusItem()
         self._setup_menu()
@@ -936,10 +1306,71 @@ class StatusBarApp(QSystemTrayIcon):
         logger.addHandler(console_handler)
         logger.info("SystemTray available=%s", QSystemTrayIcon.isSystemTrayAvailable())
 
+    def _load_effect_key(self):
+        try:
+            with open(EFFECT_PREF_FILE, "r", encoding="utf-8") as fh:
+                key = json.load(fh).get("effect")
+            if key in EFFECT_OPTIONS:
+                return key
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Could not load effect preference: %s", exc)
+        return DEFAULT_EFFECT
+
+    def _save_effect_key(self):
+        try:
+            with open(EFFECT_PREF_FILE, "w", encoding="utf-8") as fh:
+                json.dump({"effect": self.effect_key}, fh)
+        except Exception as exc:
+            logger.warning("Could not save effect preference: %s", exc)
+
+    def _create_voice_meter(self, effect_key):
+        _, overlay_cls = EFFECT_OPTIONS.get(effect_key, EFFECT_OPTIONS[DEFAULT_EFFECT])
+        return overlay_cls()
+
+    def set_effect(self, effect_key):
+        if effect_key not in EFFECT_OPTIONS or effect_key == self.effect_key:
+            return
+
+        old_meter = self.voice_meter
+        if self.worker is not None:
+            try:
+                self.worker.level_signal.disconnect(old_meter.set_level)
+            except TypeError:
+                pass
+
+        try:
+            old_meter.hide()
+        except Exception:
+            pass
+        if isinstance(old_meter, QWidget):
+            old_meter.deleteLater()
+
+        self.effect_key = effect_key
+        self.voice_meter = self._create_voice_meter(effect_key)
+        if self.worker is not None:
+            self.worker.level_signal.connect(self.voice_meter.set_level)
+        self.voice_meter.set_mode(self.state)
+        self._save_effect_key()
+        self._sync_effect_actions()
+        logger.info("Voice effect selected: %s", EFFECT_OPTIONS[effect_key][0])
+
+    def _sync_effect_actions(self):
+        for key, action in self.effect_actions.items():
+            action.setChecked(key == self.effect_key)
+
     def _setup_menu(self):
         menu = QMenu()
         logs_action = menu.addAction("View Logs & Cost")
         logs_action.triggered.connect(self.show_logs)
+        effects_menu = menu.addMenu("🛸 Effects")
+        for key, (label, _) in EFFECT_OPTIONS.items():
+            action = effects_menu.addAction(label)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, effect_key=key: self.set_effect(effect_key))
+            self.effect_actions[key] = action
+        self._sync_effect_actions()
         menu.addSeparator()
         quit_action = menu.addAction("Quit")
         quit_action.triggered.connect(self.app.quit)
@@ -1042,6 +1473,7 @@ class StatusBarApp(QSystemTrayIcon):
         elif is_shift and self.last_shift and self.waiting_for_hold and self.state in ("idle", "done"):
             if now - self.shift_press_time >= HOTKEY.hold_threshold:
                 logger.info("Hold detected; starting dictation")
+                self.paste_controller.remember_target()
                 self.set_state("recording")
                 self.worker.start_recording()
                 self.waiting_for_hold = False
@@ -1054,6 +1486,8 @@ class StatusBarApp(QSystemTrayIcon):
             self._replace_worker()
             return
         try:
+            self.voice_meter.hide()
+            QApplication.processEvents()
             self.paste_controller.paste(text)
             self.set_state("done")
             QTimer.singleShot(1500, lambda: self.set_state("idle"))
