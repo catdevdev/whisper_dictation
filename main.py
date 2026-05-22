@@ -1444,6 +1444,334 @@ class CosmicSpecterOverlay(QWidget):
             painter.drawRect(QRectF(x + pixel * 0.55, y - pixel * 2, pixel * 0.9, pixel * 0.9))
 
 
+class PixelCometOverlay(QWidget):
+    tick_ms = 33
+    max_meteors = 56
+    max_bursts = 240
+
+    def __init__(self):
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool
+        super().__init__(None, flags)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self.mode = "idle"
+        self.level = 0.0
+        self.display_level = 0.0
+        self.frame = 0
+        self.spawn_budget = 0.0
+        self.fading_out = False
+        self.meteors = []
+        self.bursts = []
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._animate)
+        self.timer.start(self.tick_ms)
+        self.hide()
+
+    def set_mode(self, mode):
+        self.mode = mode
+        if mode == "recording":
+            self.fading_out = False
+            self._cover_current_screen()
+            self._seed_scene()
+            self.show()
+            self._apply_macos_window_level()
+            self.raise_()
+            self.update()
+            logger.info("Pixel Comet overlay shown: %sx%s", self.width(), self.height())
+        elif mode == "processing":
+            self.level = 0.0
+            self.spawn_budget = 0.0
+            self.fading_out = True
+            if self.meteors or self.bursts:
+                self.show()
+                self._apply_macos_window_level()
+                self.raise_()
+                self.update()
+        else:
+            self.level = 0.0
+            self.spawn_budget = 0.0
+            self.fading_out = True
+            if not self.meteors and not self.bursts:
+                self.fading_out = False
+                self.hide()
+
+    def prepare_for_paste(self):
+        if self.isVisible() or self.meteors or self.bursts:
+            self.set_mode("processing")
+            QApplication.processEvents()
+
+    def set_level(self, level):
+        if self.mode != "recording":
+            return
+        self.level = max(0.0, min(1.0, float(level)))
+
+    def _cover_current_screen(self):
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen:
+            self.setGeometry(screen.geometry())
+
+    def _animate(self):
+        if self.mode in ("recording", "processing"):
+            if not self.isVisible():
+                self.show()
+                self._apply_macos_window_level()
+                self.raise_()
+            elif self.frame % 24 == 0:
+                self._cover_current_screen()
+                self._apply_macos_window_level()
+                self.raise_()
+
+        if not self.isVisible() and not self.meteors and not self.bursts:
+            return
+
+        self.frame += 1
+        if self.fading_out:
+            target = 0.0
+            smoothing = 0.16
+        elif self.mode == "recording":
+            target = max(0.24, self.level)
+            smoothing = 0.58 if target > self.display_level else 0.20
+        elif self.mode == "processing":
+            target = 0.16
+            smoothing = 0.12
+        else:
+            target = 0.0
+            smoothing = 0.12
+
+        self.display_level = self.display_level * (1.0 - smoothing) + target * smoothing
+        self._update_meteors()
+        self._update_bursts()
+        if self.isVisible():
+            self.update()
+
+    def _ground_y(self):
+        return self.height() - max(74.0, min(170.0, self.height() * 0.16))
+
+    def _seed_scene(self):
+        if not self.meteors:
+            for _ in range(18):
+                self._spawn_meteor(random.uniform(0.22, 0.55), seeded=True)
+        if not self.bursts:
+            ground_y = self._ground_y()
+            for x in (self.width() * 0.18, self.width() * 0.42, self.width() * 0.66, self.width() * 0.86):
+                self._spawn_burst(x, ground_y - random.uniform(4.0, 26.0), random.uniform(0.7, 1.15))
+
+    def _update_meteors(self):
+        level = self.display_level
+        if self.fading_out:
+            self.spawn_budget = 0.0
+        elif self.mode == "recording":
+            self.spawn_budget += 0.55 + level * 4.8 + level * level * 7.2
+        elif self.mode == "processing":
+            self.spawn_budget += 0.12 + level * 1.4
+
+        spawn_count = min(int(self.spawn_budget), 7, self.max_meteors - len(self.meteors))
+        self.spawn_budget -= spawn_count
+        for _ in range(max(0, spawn_count)):
+            self._spawn_meteor(level)
+
+        ground_y = self._ground_y()
+        next_meteors = []
+        for meteor in self.meteors:
+            meteor["age"] += 1
+            meteor["x"] += meteor["vx"]
+            meteor["y"] += meteor["vy"]
+            meteor["vy"] += meteor["gravity"]
+            meteor["phase"] += 0.12
+            meteor["history"].append((meteor["x"], meteor["y"]))
+            if len(meteor["history"]) > meteor["history_limit"]:
+                meteor["history"].pop(0)
+
+            if meteor["y"] >= ground_y - meteor["impact_offset"]:
+                self._spawn_burst(meteor["x"], ground_y - meteor["impact_offset"], meteor["power"])
+                continue
+
+            if -150 < meteor["x"] < self.width() + 150 and meteor["y"] < self.height() + 90:
+                next_meteors.append(meteor)
+
+        self.meteors = next_meteors[-self.max_meteors :]
+        if self.fading_out and not self.meteors and not self.bursts:
+            self.fading_out = False
+            self.hide()
+
+    def _spawn_meteor(self, level, seeded=False):
+        w = max(1, self.width())
+        h = max(1, self.height())
+        entry = random.choice(("top", "top", "left", "right"))
+        speed = random.uniform(4.8, 8.4) + level * random.uniform(7.0, 13.0)
+
+        if entry == "top":
+            x = random.uniform(-w * 0.08, w * 1.08)
+            y = -random.uniform(20.0, 130.0)
+            vx = random.uniform(-2.6, 2.6) + random.choice((-1, 1)) * level * random.uniform(0.8, 2.8)
+            vy = speed
+        elif entry == "left":
+            x = -random.uniform(24.0, 160.0)
+            y = random.uniform(-30.0, h * 0.38)
+            vx = speed * random.uniform(0.58, 0.95)
+            vy = speed * random.uniform(0.54, 0.92)
+        else:
+            x = w + random.uniform(24.0, 160.0)
+            y = random.uniform(-30.0, h * 0.38)
+            vx = -speed * random.uniform(0.58, 0.95)
+            vy = speed * random.uniform(0.54, 0.92)
+
+        if seeded:
+            y += random.uniform(80.0, h * 0.48)
+
+        self.meteors.append(
+            {
+                "x": x,
+                "y": y,
+                "vx": vx,
+                "vy": vy,
+                "gravity": random.uniform(0.025, 0.08) + level * 0.035,
+                "size": random.choice((5.0, 6.0, 7.0, 8.0)) + level * 4.0,
+                "color": random.choice(((255, 232, 132), (255, 150, 72), (255, 82, 142), (112, 240, 255), (204, 166, 255))),
+                "alpha": random.randint(220, 255),
+                "history": [],
+                "history_limit": random.randint(12, 22),
+                "phase": random.uniform(0.0, math.tau),
+                "age": 0,
+                "impact_offset": random.uniform(0.0, 24.0),
+                "power": random.uniform(0.8, 1.35) + level * 1.7,
+            }
+        )
+
+    def _spawn_burst(self, x, y, power):
+        for _ in range(min(42, int(14 + power * 14))):
+            angle = random.uniform(math.pi * 1.04, math.pi * 1.96)
+            speed = random.uniform(1.2, 5.2) * power
+            life = random.randint(22, 54) + int(power * 10)
+            self.bursts.append(
+                {
+                    "x": x + random.uniform(-8.0, 8.0),
+                    "y": y + random.uniform(-5.0, 4.0),
+                    "vx": math.cos(angle) * speed,
+                    "vy": math.sin(angle) * speed,
+                    "life": life,
+                    "max_life": life,
+                    "size": random.choice((2.0, 3.0, 4.0, 5.0)) + power * 1.2,
+                    "color": random.choice(((255, 240, 170), (255, 154, 74), (255, 76, 128), (120, 238, 255))),
+                    "alpha": random.randint(190, 255),
+                }
+            )
+        self.bursts = self.bursts[-self.max_bursts :]
+
+    def _update_bursts(self):
+        next_bursts = []
+        for burst in self.bursts:
+            burst["life"] -= 2 if self.fading_out else 1
+            burst["x"] += burst["vx"]
+            burst["y"] += burst["vy"]
+            burst["vx"] *= 0.956
+            burst["vy"] = burst["vy"] * 0.976 + 0.14
+            burst["size"] *= 0.985
+            if burst["life"] > 0 and burst["size"] > 0.35:
+                next_bursts.append(burst)
+        self.bursts = next_bursts[-self.max_bursts :]
+
+    def _apply_macos_window_level(self):
+        if sys.platform != "darwin":
+            return
+        try:
+            native_view = objc.objc_object(c_void_p=ctypes.c_void_p(int(self.winId())))
+            native_window = native_view.window()
+            if native_window is None:
+                return
+            behavior = (
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorIgnoresCycle
+            )
+            native_window.setLevel_(NSScreenSaverWindowLevel)
+            native_window.setCollectionBehavior_(behavior)
+            native_window.setIgnoresMouseEvents_(True)
+            native_window.setCanHide_(False)
+            native_window.setHidesOnDeactivate_(False)
+            native_window.orderFrontRegardless()
+        except Exception as exc:
+            logger.warning("Pixel Comet native window setup failed: %s", exc)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(Qt.PenStyle.NoPen)
+        self._paint_edge_stars(painter)
+        self._paint_ground(painter)
+        self._paint_meteors(painter)
+        self._paint_bursts(painter)
+        painter.end()
+
+    def _paint_edge_stars(self, painter):
+        w = self.width()
+        h = self.height()
+        alpha = 70 if self.fading_out else 122
+        painter.setBrush(QBrush(QColor(120, 236, 255, alpha)))
+        for index in range(42):
+            x = (index * 83 + self.frame * (1 + index % 3)) % max(1, w)
+            y = (index * 47) % max(1, int(h * 0.34))
+            size = 1 + (index % 3)
+            if index % 2 == 0:
+                painter.drawRect(QRectF(x, y, size, size))
+            painter.drawRect(QRectF(w - x, h - y - 1, size, size))
+
+    def _paint_ground(self, painter):
+        w = self.width()
+        h = self.height()
+        ground_y = self._ground_y()
+        painter.setBrush(QBrush(QColor(146, 56, 48, 175 if self.fading_out else 225)))
+        painter.drawRect(QRectF(0, ground_y, w, h - ground_y))
+        for index, x in enumerate(range(-24, int(w) + 48, 24)):
+            ridge = math.sin(index * 0.75 + self.frame * 0.025) * 10.0
+            y = ground_y + 12.0 + ridge
+            painter.setBrush(QBrush(QColor(222, 92, 58, 170 if self.fading_out else 235)))
+            painter.drawRect(QRectF(x, y, 26, h - y))
+            painter.setBrush(QBrush(QColor(84, 36, 42, 135)))
+            if index % 3 == 0:
+                painter.drawRect(QRectF(x + 6, y + 18, 34, 5))
+
+    def _paint_meteors(self, painter):
+        for meteor in self.meteors:
+            r, g, b = meteor["color"]
+            history = meteor["history"]
+            for index, (x, y) in enumerate(history):
+                ratio = (index + 1) / max(1, len(history))
+                alpha = int(meteor["alpha"] * 0.58 * ratio)
+                size = max(2.0, meteor["size"] * ratio * 0.72)
+                painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+                painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+
+            x = meteor["x"]
+            y = meteor["y"]
+            size = meteor["size"] + math.sin(meteor["phase"]) * 0.8
+            painter.setBrush(QBrush(QColor(r, g, b, meteor["alpha"])))
+            painter.drawRect(QRectF(round(x - size * 0.5), round(y - size * 0.5), size, size))
+            painter.setBrush(QBrush(QColor(255, 255, 220, min(255, meteor["alpha"] + 24))))
+            painter.drawRect(QRectF(round(x - size * 0.22), round(y - size * 0.22), max(2.0, size * 0.44), max(2.0, size * 0.44)))
+
+    def _paint_bursts(self, painter):
+        for burst in self.bursts:
+            life_ratio = max(0.0, min(1.0, burst["life"] / burst["max_life"]))
+            alpha = int(burst["alpha"] * life_ratio)
+            if alpha <= 0:
+                continue
+            r, g, b = burst["color"]
+            size = burst["size"] * (0.9 + (1.0 - life_ratio) * 1.2)
+            painter.setBrush(QBrush(QColor(r, g, b, alpha)))
+            painter.drawRect(QRectF(round(burst["x"] - size * 0.5), round(burst["y"] - size * 0.5), size, size))
+
+            if life_ratio > 0.66:
+                flash = size * 2.7
+                painter.setBrush(QBrush(QColor(255, 240, 170, int(alpha * 0.32))))
+                painter.drawRect(QRectF(round(burst["x"] - flash * 0.5), round(burst["y"] - flash * 0.5), flash, flash))
+
+
 class DisabledVoiceMeterOverlay(QObject):
     def set_mode(self, mode):
         pass
@@ -1458,7 +1786,7 @@ class DisabledVoiceMeterOverlay(QObject):
 EFFECT_OPTIONS = {
     "specters": ("👻 Cosmic Specters", CosmicSpecterOverlay),
     "ufo": ("🛸 Pixel UFO Trail", SimpleVoiceMeterOverlay),
-    "comet": ("☄️ Pixel Comet", VoiceMeterOverlay),
+    "comet": ("☄️ Pixel Comet", PixelCometOverlay),
     "off": ("Off", DisabledVoiceMeterOverlay),
 }
 DEFAULT_EFFECT = "specters"
