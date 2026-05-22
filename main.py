@@ -10,6 +10,7 @@ import array
 import ctypes
 import objc
 import random
+import subprocess
 import pyaudio
 import pyperclip
 from datetime import datetime
@@ -651,8 +652,15 @@ class StatusBarApp(QSystemTrayIcon):
             pyperclip.copy(text)
             logger.info("📋 Text copied to clipboard.")
             time.sleep(0.1)
-            cmd = """osascript -e 'tell application "System Events" to keystroke "v" using command down'"""
-            os.system(cmd)
+            # key code 9 is the physical V key, so Cmd+V works in any keyboard layout.
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "System Events" to key code 9 using command down',
+                ],
+                check=True,
+            )
             logger.info("⌨️ Pasted (Cmd+V).")
         except Exception as e:
             logger.error(f"❌ Paste Error: {e}")
