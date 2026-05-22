@@ -10,7 +10,6 @@ import array
 import ctypes
 import objc
 import random
-import subprocess
 import pyaudio
 import pyperclip
 from datetime import datetime
@@ -48,6 +47,8 @@ from AppKit import (
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorIgnoresCycle,
     NSWindowCollectionBehaviorStationary,
+    NSPasteboard,
+    NSPasteboardTypeString,
 )
 
 load_dotenv()
@@ -71,6 +72,8 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
 CHUNK = 1024
+KEY_CODE_V = 9
+CG_EVENT_FLAG_MASK_COMMAND = 1 << 20
 
 client = OpenAI(api_key=API_KEY)
 
@@ -649,21 +652,53 @@ class StatusBarApp(QSystemTrayIcon):
 
     def _paste(self, text):
         try:
-            pyperclip.copy(text)
+            self._copy_to_clipboard(text)
             logger.info("📋 Text copied to clipboard.")
-            time.sleep(0.1)
-            # key code 9 is the physical V key, so Cmd+V works in any keyboard layout.
-            subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    'tell application "System Events" to key code 9 using command down',
-                ],
-                check=True,
-            )
+            time.sleep(0.2)
+            self._send_cmd_v()
             logger.info("⌨️ Pasted (Cmd+V).")
         except Exception as e:
             logger.error(f"❌ Paste Error: {e}")
+
+    def _copy_to_clipboard(self, text):
+        pyperclip.copy(text)
+        pasteboard = NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        if not pasteboard.setString_forType_(text, NSPasteboardTypeString):
+            raise RuntimeError("NSPasteboard rejected text")
+
+    def _send_cmd_v(self):
+        app_services = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+        core_foundation = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+
+        app_services.CGEventCreateKeyboardEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint16,
+            ctypes.c_bool,
+        ]
+        app_services.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
+        app_services.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        app_services.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+
+        key_down = app_services.CGEventCreateKeyboardEvent(None, KEY_CODE_V, True)
+        key_up = app_services.CGEventCreateKeyboardEvent(None, KEY_CODE_V, False)
+        if not key_down or not key_up:
+            raise RuntimeError("Could not create Cmd+V keyboard event")
+
+        try:
+            app_services.CGEventSetFlags(key_down, CG_EVENT_FLAG_MASK_COMMAND)
+            app_services.CGEventSetFlags(key_up, CG_EVENT_FLAG_MASK_COMMAND)
+            app_services.CGEventPost(0, key_down)
+            time.sleep(0.03)
+            app_services.CGEventPost(0, key_up)
+        finally:
+            core_foundation.CFRelease(key_down)
+            core_foundation.CFRelease(key_up)
 
     def update_icon(self):
         self.anim_frame += 1
