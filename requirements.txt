@@ -5,3 +5,9 @@ openai
 PyQt6
 pyobjc
 python-dotenv
+kokoro-onnx
+piper-tts
+sounddevice
+torch
+omegaconf
+mlx-audio
