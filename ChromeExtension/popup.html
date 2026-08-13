@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Whisper</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Whisper</h1>
+          <p id="connection"><span class="dot" aria-hidden="true"></span><span>Подключение…</span></p>
+        </div>
+        <span class="state" id="state">Готово</span>
+      </header>
+
+      <button class="read" id="read" type="button">Прочитать выделение</button>
+
+      <div class="transport" role="toolbar" aria-label="Управление чтением">
+        <button type="button" id="back" aria-label="Назад на 10 слов" title="Назад на 10 слов">−10</button>
+        <button type="button" class="play" id="toggle" aria-label="Пауза" title="Пауза">Ⅱ</button>
+        <button type="button" id="forward" aria-label="Вперёд на 10 слов" title="Вперёд на 10 слов">+10</button>
+        <button type="button" id="stop" aria-label="Остановить чтение" title="Остановить">■</button>
+      </div>
+
+      <label class="seek">
+        <span>Позиция <output id="position">0%</output></span>
+        <input id="seek" type="range" min="0" max="1" step="1" value="0" disabled>
+      </label>
+
+      <p class="app-setting">Голос и скорость задаются в настройках Whisper.</p>
+
+      <details>
+        <summary>Локальное подключение</summary>
+        <label class="endpoint">
+          Адрес WebSocket
+          <input id="endpoint" type="url" spellcheck="false" value="ws://127.0.0.1:17777" readonly>
+        </label>
+        <form id="pairing-form">
+          <label class="pairing-code">
+            Код подключения
+            <input
+              id="pairing-code"
+              type="password"
+              inputmode="text"
+              autocomplete="new-password"
+              spellcheck="false"
+              placeholder="Вставьте 64-значный код"
+            >
+          </label>
+          <div class="pairing-action">
+            <span id="pairing-status">Не подключено</span>
+            <button id="pair" type="submit">Подключить</button>
+          </div>
+        </form>
+        <p>Расширение соединяется только с этим Mac.</p>
+      </details>
+
+      <p class="error" id="error" role="alert" hidden></p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

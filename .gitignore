@@ -1,8 +1,7 @@
 .env
-venv/
-venv-tts/
-.venv/
-__pycache__/
-*.py[cod]
 .DS_Store
-.openai_voice_costs.json
+.build/
+.swiftpm/
+dist/
+Config/LocalCodeSigningIdentity.sha1
+*.xcuserstate

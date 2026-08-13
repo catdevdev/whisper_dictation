@@ -1,0 +1,3 @@
+# Created by scripts/setup-local-signing.sh as LocalCodeSigningIdentity.sha1.
+# The real file contains one 40-character SHA-1 certificate fingerprint.
+0123456789ABCDEF0123456789ABCDEF01234567

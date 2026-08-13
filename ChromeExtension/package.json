@@ -1,0 +1,14 @@
+{
+  "name": "optionvoice-chrome-extension",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "npm run check:manifest && node --check background.js && node --check bridge.js && node --check content.js && node --check popup.js && node --check shared/selection-security.js",
+    "check:manifest": "node -e \"JSON.parse(require('node:fs').readFileSync('manifest.json', 'utf8'))\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

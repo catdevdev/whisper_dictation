@@ -1,0 +1,231 @@
+:root {
+  color-scheme: light dark;
+  font: 14px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: Canvas;
+  color: CanvasText;
+  margin: 0;
+  min-width: 300px;
+}
+
+main {
+  padding: 16px;
+}
+
+header {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+h1 {
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0 0 5px;
+}
+
+p {
+  margin: 0;
+}
+
+#connection {
+  align-items: center;
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.dot {
+  background: #d28b00;
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+
+.connected .dot {
+  background: #218739;
+}
+
+.error-state .dot {
+  background: #c33a2b;
+}
+
+.state {
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+button {
+  appearance: none;
+  background: color-mix(in srgb, CanvasText 7%, transparent);
+  border: 0;
+  border-radius: 9px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover:not(:disabled) {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.read {
+  background: CanvasText;
+  color: Canvas;
+  font-weight: 650;
+  padding: 10px 14px;
+  width: 100%;
+}
+
+.read:hover:not(:disabled) {
+  background: color-mix(in srgb, CanvasText 84%, Canvas);
+}
+
+.transport {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 10px 0 16px;
+}
+
+.transport button {
+  height: 38px;
+}
+
+.transport .play {
+  font-size: 16px;
+}
+
+#stop {
+  font-size: 12px;
+}
+
+.seek {
+  display: grid;
+  gap: 6px;
+}
+
+.seek > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.app-setting {
+  color: color-mix(in srgb, CanvasText 58%, transparent);
+  font-size: 11px;
+  margin-bottom: 14px;
+}
+
+.seek {
+  margin-bottom: 14px;
+}
+
+output {
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="range"] {
+  accent-color: CanvasText;
+  margin: 0;
+  width: 100%;
+}
+
+details {
+  border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.endpoint,
+.pairing-code {
+  display: grid;
+  font-size: 12px;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+input[type="url"],
+input[type="password"] {
+  background: color-mix(in srgb, CanvasText 5%, transparent);
+  border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  border-radius: 7px;
+  color: inherit;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px 8px;
+  width: 100%;
+}
+
+.pairing-action {
+  align-items: center;
+  display: flex;
+  font-size: 11px;
+  justify-content: space-between;
+  margin-top: 7px;
+}
+
+.pairing-action span {
+  color: color-mix(in srgb, CanvasText 55%, transparent);
+}
+
+.pairing-action button {
+  padding: 6px 10px;
+}
+
+details p {
+  color: color-mix(in srgb, CanvasText 55%, transparent);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.error {
+  background: color-mix(in srgb, #c33a2b 12%, Canvas);
+  border-radius: 7px;
+  color: #a72d21;
+  font-size: 12px;
+  margin-top: 12px;
+  padding: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error {
+    color: #ff9a8f;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}

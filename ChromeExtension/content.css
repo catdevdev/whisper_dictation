@@ -1,0 +1,14 @@
+::highlight(optionvoice-current-token) {
+  color: inherit;
+  background: color-mix(in srgb, #4c8ded 38%, transparent);
+  text-decoration: underline 2px #2168d5;
+  text-underline-offset: 0.14em;
+}
+
+@media (prefers-color-scheme: dark) {
+  ::highlight(optionvoice-current-token) {
+    color: inherit;
+    background: color-mix(in srgb, #528fee 34%, transparent);
+    text-decoration-color: #78aaff;
+  }
+}
