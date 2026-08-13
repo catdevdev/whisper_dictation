@@ -1,6 +1,6 @@
 import Foundation
 
-/// Commands produced after assigning the two physical Option keys distinct roles.
+/// Commands produced after assigning left Shift and right Option distinct roles.
 public enum OptionCommand: Equatable, Sendable {
     case dictation(GestureAction)
     case readingArmed
@@ -11,8 +11,8 @@ public enum OptionCommand: Equatable, Sendable {
 
 /// Routes two independent tap-then-hold gestures.
 ///
-/// Left Option retains the dictation gesture owned by
-/// ``OptionGestureMachine``. Right Option uses the same timing configuration,
+/// Left Shift owns the dictation gesture handled by ``OptionGestureMachine``.
+/// Right Option uses the same timing configuration,
 /// but only a quick right-Option tap followed by a clean, sustained
 /// right-Option press may read selected text. Events from one physical key are
 /// never allowed to complete the other key's gesture.

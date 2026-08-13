@@ -28,6 +28,7 @@ swiftc \
 
 service_sources=(
     "$ROOT/Sources/WhisperApp/Services/AudioRecorderService.swift"
+    "$ROOT/Sources/WhisperApp/Services/GlobalOptionMonitor.swift"
     "$ROOT/Sources/WhisperApp/Services/KeychainCredentialStore.swift"
     "$ROOT/Sources/WhisperApp/Services/OpenAITranscriptionClient.swift"
     "$ROOT/Sources/WhisperApp/Services/SingleInstanceGuard.swift"

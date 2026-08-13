@@ -41,7 +41,7 @@ struct HUDView: View {
     private var visual: some View {
         switch model.presentation {
         case .armed:
-            Image(systemName: "option")
+            Image(systemName: "shift")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(WhisperTheme.accent)
                 .frame(width: 34, height: 34)
@@ -58,7 +58,7 @@ struct HUDView: View {
                         style: StrokeStyle(lineWidth: 4, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                Image(systemName: "option")
+                Image(systemName: "shift")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(WhisperTheme.accent)
             }

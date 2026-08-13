@@ -4,7 +4,7 @@ extension DictationPhase {
     var headline: String {
         switch self {
         case .idle: "Готово к диктовке"
-        case .armed: "Жду удержание Option"
+        case .armed: "Жду удержание Shift"
         case .holding: "Продолжайте удерживать"
         case .recording: "Слушаю"
         case .transcribing: "Распознаю речь"
@@ -16,13 +16,13 @@ extension DictationPhase {
     var detail: String {
         switch self {
         case .idle:
-            "Быстро нажмите Option, затем нажмите и удерживайте её"
+            "Быстро нажмите левый Shift, затем нажмите и удерживайте его"
         case .armed:
-            "Нажмите Option и держите 1,5 секунды"
+            "Нажмите левый Shift и держите 1,5 секунды"
         case let .holding(progress):
             progress < 0.55 ? "Ещё немного" : "Почти готово"
         case .recording:
-            "Нажмите Option ещё раз, чтобы завершить"
+            "Нажмите левый Shift ещё раз, чтобы завершить"
         case .transcribing:
             "Аудио отправляется на распознавание"
         case .success:
@@ -35,7 +35,7 @@ extension DictationPhase {
     var symbol: String {
         switch self {
         case .idle: "waveform"
-        case .armed: "option"
+        case .armed: "shift"
         case .holding: "circle.dotted"
         case .recording: "waveform.circle.fill"
         case .transcribing: "text.bubble"

@@ -35,7 +35,7 @@ final class OptionGestureMachineTests: XCTestCase {
         XCTAssertTrue(tracker.pressedKeys.isEmpty)
     }
 
-    func testOptionTransitionTrackerNeverMarksSecondOptionClean() {
+    func testOptionTransitionTrackerNeverMarksSecondGestureKeyClean() {
         var tracker = OptionTransitionTracker()
 
         _ = tracker.transition(for: .left, isPressed: true, clean: true)
@@ -145,7 +145,7 @@ final class OptionGestureMachineTests: XCTestCase {
     func testPublicDefaultsAndRawKeyCodes() {
         let configuration = GestureConfiguration()
 
-        XCTAssertEqual(OptionKey.left.rawValue, 58)
+        XCTAssertEqual(OptionKey.left.rawValue, 56)
         XCTAssertEqual(OptionKey.right.rawValue, 61)
         XCTAssertEqual(configuration.tapMaximum, 0.35)
         XCTAssertEqual(configuration.secondPressWindow, 2.0)

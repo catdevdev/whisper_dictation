@@ -12,7 +12,7 @@ public enum GlobalOptionMonitorError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .alreadyRunning:
-            "Глобальные горячие клавиши Option уже запущены."
+            "Глобальные горячие клавиши Shift/Option уже запущены."
         case .inputMonitoringMayBeRequired:
             "macOS отклонила глобальную горячую клавишу. Разрешите Whisper Мониторинг ввода в Системных настройках и перезапустите приложение."
         case .unableToCreateEventTap:
@@ -35,7 +35,8 @@ public struct ObservedGestureEvent: Equatable, Sendable {
     }
 }
 
-/// Observes physical Option keys with a listen-only event tap and never suppresses input.
+/// Observes left Shift and right Option with a listen-only event tap and never
+/// suppresses input.
 public final class GlobalOptionMonitor {
     public typealias Handler = (ObservedGestureEvent) -> Void
     public typealias FailureHandler = (GlobalOptionMonitorError) -> Void
@@ -47,6 +48,13 @@ public final class GlobalOptionMonitor {
     private var failureHandler: FailureHandler?
     private var optionTracker = OptionTransitionTracker()
     private var isRecoveringDisabledTap = false
+
+    // IOLLEvent.h device-specific modifier bits. Aggregate masks cannot tell
+    // left Shift from right Shift or left Option from right Option.
+    private static let leftShiftDeviceMask: UInt64 = 0x02
+    private static let rightShiftDeviceMask: UInt64 = 0x04
+    private static let leftOptionDeviceMask: UInt64 = 0x20
+    private static let rightOptionDeviceMask: UInt64 = 0x40
 
     public init() {}
 
@@ -197,8 +205,11 @@ public final class GlobalOptionMonitor {
         let output: GestureEvent? = stateLock.withLock {
             return optionTracker.transition(
                 for: optionKey,
-                pressedInEvent: Self.pressedOptions(in: event.flags),
-                clean: isCleanOptionPress(event.flags)
+                pressedInEvent: Self.pressedGestureKeys(in: event.flags),
+                clean: Self.isCleanGesturePress(
+                    for: optionKey,
+                    flags: event.flags
+                )
             )
         }
         if let output {
@@ -230,7 +241,10 @@ public final class GlobalOptionMonitor {
         )
     }
 
-    private func isCleanOptionPress(_ flags: CGEventFlags) -> Bool {
+    static func isCleanGesturePress(
+        for key: OptionKey,
+        flags: CGEventFlags
+    ) -> Bool {
         let relevant: CGEventFlags = [
             .maskShift,
             .maskControl,
@@ -238,19 +252,30 @@ public final class GlobalOptionMonitor {
             .maskCommand,
             .maskSecondaryFn,
         ]
-        return flags.intersection(relevant).subtracting(.maskAlternate).isEmpty
+        let allowed: CGEventFlags = key == .left ? .maskShift : .maskAlternate
+        guard flags.intersection(relevant).subtracting(allowed).isEmpty else {
+            return false
+        }
+
+        let rawFlags = flags.rawValue
+        switch key {
+        case .left:
+            return rawFlags & leftShiftDeviceMask != 0
+                && rawFlags & rightShiftDeviceMask == 0
+        case .right:
+            return rawFlags & rightOptionDeviceMask != 0
+                && rawFlags & leftOptionDeviceMask == 0
+        }
     }
 
-    private static func pressedOptions(in flags: CGEventFlags) -> Set<OptionKey> {
-        // IOLLEvent.h: NX_DEVICELALTKEYMASK / NX_DEVICERALTKEYMASK. Read the
-        // side bits from this event rather than a second global-state snapshot.
-        guard flags.contains(.maskAlternate) else { return [] }
-
+    static func pressedGestureKeys(in flags: CGEventFlags) -> Set<OptionKey> {
+        // Read side bits from this event rather than a second, potentially stale
+        // global-state snapshot.
         var pressed: Set<OptionKey> = []
-        if flags.rawValue & 0x20 != 0 {
+        if flags.rawValue & leftShiftDeviceMask != 0 {
             pressed.insert(.left)
         }
-        if flags.rawValue & 0x40 != 0 {
+        if flags.rawValue & rightOptionDeviceMask != 0 {
             pressed.insert(.right)
         }
         return pressed

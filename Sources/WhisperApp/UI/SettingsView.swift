@@ -160,7 +160,7 @@ struct SettingsView: View {
                             title: "Мониторинг ввода (резерв)",
                             detail: recoveryState == .allowed
                                 ? "Доступ есть — повторяю запуск горячих клавиш"
-                                : "macOS запросила отдельный доступ для клавиши Option",
+                                : "macOS запросила отдельный доступ для клавиш Shift/Option",
                             symbol: "keyboard.badge.ellipsis",
                             state: recoveryState,
                             actionTitle: recoveryState == .allowed ? "Повторить" : "Разрешить",
@@ -262,10 +262,10 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsCard(title: "Левая Option", symbol: "keyboard") {
+            SettingsCard(title: "Левый Shift", symbol: "keyboard") {
                 ShortcutGuide(
                     steps: [
-                        ("1", "Коротко нажмите левую Option"),
+                        ("1", "Коротко нажмите левый Shift"),
                         ("2", "Снова нажмите и удерживайте 1,5 секунды"),
                         ("3", "Нажмите ещё раз, чтобы завершить запись"),
                     ]
@@ -273,7 +273,7 @@ struct SettingsView: View {
             }
 
             SettingsCard(title: "Альтернативное управление", symbol: "hand.tap") {
-                Text("Запись можно запустить и остановить кнопкой в меню Whisper. Это удобно, если жест Option недоступен.")
+                Text("Запись можно запустить и остановить кнопкой в меню Whisper. Это удобно, если жест Shift недоступен.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -387,7 +387,7 @@ struct SettingsView: View {
         }
         switch controller.hotkeyStatus {
         case .active:
-            return "Левая и правая Option активны."
+            return "Левый Shift и правая Option активны."
         case .checking:
             return "Запускаю горячие клавиши…"
         case .needsAccessibility:
@@ -489,7 +489,7 @@ private enum SettingsPane: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .setup: return "Доступы, ключ OpenAI и запуск приложения"
-        case .dictation: return "Распознавание речи и левая Option"
+        case .dictation: return "Распознавание речи и левый Shift"
         case .reading: return "Локальный голос Qwen и Google Chrome"
         }
     }

@@ -15,6 +15,7 @@ private enum WhisperServicesVerification {
 
         await verifier.verifyOpenAIClient()
         await verifier.verifyTextInsertionPrimitives()
+        verifier.verifyGlobalGestureMonitorPolicy()
         verifier.verifyKeychainRoundTrip()
         verifier.verifyAudioRecorderFilePolicy()
         verifier.verifySingleInstanceGuard()
@@ -36,6 +37,100 @@ private enum WhisperServicesVerification {
 private struct Verifier {
     private(set) var checkCount = 0
     private(set) var failureCount = 0
+
+    mutating func verifyGlobalGestureMonitorPolicy() {
+        let leftShift = CGEventFlags(
+            rawValue: CGEventFlags.maskShift.rawValue | 0x02
+        )
+        let rightOption = CGEventFlags(
+            rawValue: CGEventFlags.maskAlternate.rawValue | 0x40
+        )
+        let rightShift = CGEventFlags(
+            rawValue: CGEventFlags.maskShift.rawValue | 0x04
+        )
+        let leftOption = CGEventFlags(
+            rawValue: CGEventFlags.maskAlternate.rawValue | 0x20
+        )
+
+        expectEqual(
+            OptionKey(rawValue: 56),
+            .left,
+            "left Shift is the dictation gesture key"
+        )
+        expect(
+            OptionKey(rawValue: 58) == nil,
+            "left Option no longer starts dictation"
+        )
+        expectEqual(
+            OptionKey(rawValue: 61),
+            .right,
+            "right Option remains the reading gesture key"
+        )
+        expectEqual(
+            GlobalOptionMonitor.pressedGestureKeys(in: leftShift),
+            [.left],
+            "left Shift device state maps only to dictation"
+        )
+        expectEqual(
+            GlobalOptionMonitor.pressedGestureKeys(in: rightOption),
+            [.right],
+            "right Option device state maps only to reading"
+        )
+        expect(
+            GlobalOptionMonitor.pressedGestureKeys(in: rightShift).isEmpty,
+            "right Shift is not a Whisper gesture key"
+        )
+        expect(
+            GlobalOptionMonitor.pressedGestureKeys(in: leftOption).isEmpty,
+            "left Option is not a Whisper gesture key"
+        )
+        expect(
+            GlobalOptionMonitor.isCleanGesturePress(
+                for: .left,
+                flags: leftShift
+            ),
+            "an isolated left Shift press is clean"
+        )
+        expect(
+            !GlobalOptionMonitor.isCleanGesturePress(
+                for: .left,
+                flags: leftShift.union(.maskAlternate)
+            ),
+            "Option chord cannot trigger dictation"
+        )
+        expect(
+            !GlobalOptionMonitor.isCleanGesturePress(
+                for: .left,
+                flags: CGEventFlags(
+                    rawValue: leftShift.rawValue | rightShift.rawValue
+                )
+            ),
+            "both Shift keys cannot trigger dictation"
+        )
+        expect(
+            GlobalOptionMonitor.isCleanGesturePress(
+                for: .right,
+                flags: rightOption
+            ),
+            "an isolated right Option press remains clean"
+        )
+        expect(
+            !GlobalOptionMonitor.isCleanGesturePress(
+                for: .right,
+                flags: rightOption.union(.maskShift)
+            ),
+            "Shift chord cannot trigger reading"
+        )
+        expect(
+            !GlobalOptionMonitor.isCleanGesturePress(
+                for: .right,
+                flags: CGEventFlags(
+                    rawValue: rightOption.rawValue | leftOption.rawValue
+                )
+            ),
+            "both Option keys cannot trigger reading"
+        )
+    }
 
     mutating func verifyOpenAIClient() async {
         let fileManager = FileManager.default

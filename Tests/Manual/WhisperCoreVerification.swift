@@ -37,7 +37,7 @@ private struct Verifier {
 
     mutating func verifyConfigurationAndKeys() {
         let defaults = GestureConfiguration()
-        expectEqual(OptionKey.left.rawValue, 58, "left Option raw key code")
+        expectEqual(OptionKey.left.rawValue, 56, "left Shift raw key code")
         expectEqual(OptionKey.right.rawValue, 61, "right Option raw key code")
         expectEqual(defaults.tapMaximum, 0.35, "default tap boundary")
         expectEqual(defaults.secondPressWindow, 2.0, "default second-press window")
@@ -240,22 +240,22 @@ private struct Verifier {
         expectEqual(
             tracker.transition(for: .left, isPressed: true, clean: true),
             .optionDown(.left, clean: true),
-            "physical Option down creates one transition"
+            "physical gesture-key down creates one transition"
         )
         expectEqual(
             tracker.transition(for: .left, isPressed: true, clean: true),
             nil,
-            "duplicate physical Option down is ignored"
+            "duplicate physical gesture-key down is ignored"
         )
         expectEqual(
             tracker.transition(for: .left, isPressed: false, clean: true),
             .optionUp(.left),
-            "physical Option release creates one transition"
+            "physical gesture-key release creates one transition"
         )
         expectEqual(
             tracker.transition(for: .left, isPressed: false, clean: true),
             nil,
-            "unmatched physical Option release is ignored"
+            "unmatched physical gesture-key release is ignored"
         )
         expectEqual(
             tracker.transition(for: .left, isPressed: true, clean: true),
@@ -273,12 +273,12 @@ private struct Verifier {
         expectEqual(
             tracker.transition(for: .right, isPressed: true, clean: true),
             .optionDown(.right, clean: false),
-            "second physical Option is never a clean press"
+            "second physical gesture key is never a clean press"
         )
         expectEqual(
             tracker.pressedKeys,
             Set([.left, .right]),
-            "tracker retains both pressed Option keys"
+            "tracker retains both pressed gesture keys"
         )
 
         var eventSnapshots = OptionTransitionTracker()
@@ -345,7 +345,7 @@ private struct Verifier {
                 clean: true
             ),
             .optionDown(.left, clean: true),
-            "chord starts with left Option"
+            "chord starts with left Shift"
         )
         expectEqual(
             fullChord.transition(
@@ -436,7 +436,7 @@ private struct Verifier {
         expectEqual(
             dictation.handle(.optionDown(.left, clean: true), at: 2),
             [.dictation(.stopRecording)],
-            "next left Option stops recording"
+            "next left Shift stops recording"
         )
 
         var reading = OptionCommandRouter()
@@ -533,12 +533,12 @@ private struct Verifier {
         expectEqual(
             crossChord.handle(.optionDown(.right, clean: false), at: 0.1),
             [.dictation(.cancelled)],
-            "cross-Option chord cancels pending left gesture"
+            "mixed modifier chord cancels pending left gesture"
         )
         expectEqual(
             crossChord.handle(.optionUp(.right), at: 0.2),
             [],
-            "cross-Option chord suppresses right read"
+            "mixed modifier chord suppresses right read"
         )
         expectEqual(crossChord.dictationPhase, .idle, "cross chord leaves router idle")
 
@@ -548,7 +548,7 @@ private struct Verifier {
         expectEqual(
             rightCrossChord.handle(.optionDown(.left, clean: true), at: 0.2),
             [.readingCancelled],
-            "left Option cannot complete an armed right gesture"
+            "left Shift cannot complete an armed right gesture"
         )
         expectEqual(
             rightCrossChord.handle(.optionUp(.left), at: 0.3),

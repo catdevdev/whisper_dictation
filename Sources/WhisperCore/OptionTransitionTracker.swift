@@ -1,9 +1,10 @@
 import Foundation
 
-/// Turns side-specific `flagsChanged` snapshots into explicit Option transitions.
+/// Turns side-specific `flagsChanged` snapshots into explicit gesture-key
+/// transitions for left Shift and right Option.
 ///
-/// The event's key code identifies the physical Option key whose state changed,
-/// while its device-specific flags describe both keys after that change. This
+/// The event's key code identifies the physical gesture key whose state changed,
+/// while its device-specific flags describe both monitored keys afterward. This
 /// makes chord releases and duplicate events deterministic without a second,
 /// potentially stale hardware-state poll.
 public struct OptionTransitionTracker: Sendable {
@@ -21,9 +22,9 @@ public struct OptionTransitionTracker: Sendable {
         if isPressed {
             guard !pressedKeys.contains(key) else { return nil }
 
-            let isOnlyOption = pressedKeys.isEmpty
+            let isOnlyGestureKey = pressedKeys.isEmpty
             pressedKeys.insert(key)
-            return .optionDown(key, clean: clean && isOnlyOption)
+            return .optionDown(key, clean: clean && isOnlyGestureKey)
         }
 
         guard pressedKeys.remove(key) != nil else { return nil }

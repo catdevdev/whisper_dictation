@@ -319,7 +319,7 @@ struct ControlCenterView: View {
             return controller.phase.headline
         }
         if controller.isMonitoring {
-            return "Левая и правая Option активны"
+            return "Левый Shift и правая Option активны"
         }
         return "Нужно завершить настройку"
     }
@@ -348,7 +348,7 @@ struct ControlCenterView: View {
             return "Нужен Универсальный доступ"
         }
         if controller.isMonitoring {
-            return "Левая Option · нажать, затем удерживать"
+            return "Левый Shift · нажать, затем удерживать"
         }
         return "Кнопка работает без глобального жеста"
     }

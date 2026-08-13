@@ -1,7 +1,7 @@
 # Whisper
 
-Whisper 2.4.4 is a small native macOS menu-bar app for voice dictation and local
-Qwen reading of selected text. The left Option key records, transcribes, and
+Whisper 2.4.5 is a small native macOS menu-bar app for voice dictation and local
+Qwen reading of selected text. The left Shift key records, transcribes, and
 inserts speech. A right-Option tap followed by a second, held press reads the
 current selection with Qwen3-TTS 1.7B.
 
@@ -21,16 +21,16 @@ normally required. If macOS rejects the event tap on a particular installation,
 Whisper exposes Input Monitoring as a clearly labelled recovery action; it is
 never a normal readiness gate.
 
-### Left Option: dictate
+### Left Shift: dictate
 
-1. Tap the left `Option` key quickly.
-2. Press the left `Option` key again within 2 seconds and hold it for 1.5
+1. Tap the left `Shift` key quickly.
+2. Press the left `Shift` key again within 2 seconds and hold it for 1.5
    seconds, until recording starts.
 3. Release the key and dictate normally.
-4. Tap the left `Option` key once to stop, transcribe, and insert the text.
+4. Tap the left `Shift` key once to stop, transcribe, and insert the text.
 
-The first tap must last no more than 350 ms. Normal key presses, both Option
-keys held together, and shortcuts such as `Option` + another key cancel a
+The first tap must last no more than 350 ms. Normal key presses, other
+modifiers, and shortcuts such as `Shift` + another key cancel a
 pending gesture. The right Option key cannot stop an active recording.
 
 ### Right Option: read
@@ -54,7 +54,7 @@ controls. Whisper detects the language from the selected text itself, so an
 English website interface does not force Russian text through English
 pronunciation.
 
-A compact HUD appears in the lower-right corner for both Option gestures.
+A compact HUD appears in the lower-right corner for both modifier gestures.
 During Qwen reading it expands into a small non-activating controller with
 pause/resume, previous/next sentence, precise seeking, stop, and live playback
 speed. It does not activate Whisper or take keyboard focus from the selected
@@ -96,12 +96,12 @@ Whisper needs two macOS permissions for the complete dictation and reading
 workflow:
 
 - Microphone, to record speech.
-- Accessibility, to run the listen-only Option-key monitor, read native
+- Accessibility, to run the listen-only Shift/Option-key monitor, read native
   selections, and insert text into the active app.
 
 The control center and Settings show a separate row and action for every
 permission and link to the relevant System Settings page. Accessibility must be
-enabled before Whisper starts its global Option monitor.
+enabled before Whisper starts its global modifier monitor.
 
 The OpenAI key is entered explicitly in Settings and stored in macOS Keychain. Whisper never scans the working directory or imports secrets from `.env`, and the key is never included in the app bundle, source control, or logs.
 
@@ -214,7 +214,7 @@ required.
 
 ## Architecture
 
-`WhisperCore` owns the deterministic left/right Option routing, dictation
+`WhisperCore` owns the deterministic left-Shift/right-Option routing, dictation
 gesture state machine, sentence/token navigation, and multipart request
 construction. `WhisperApp` is a single native process built with SwiftUI,
 AppKit, AVFoundation, CoreGraphics, ApplicationServices, CryptoKit,

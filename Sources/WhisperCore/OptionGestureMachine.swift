@@ -1,8 +1,11 @@
 import Foundation
 
-/// The two physical Option keys as reported by macOS keyboard events.
+/// The two physical modifier keys assigned to Whisper gestures.
+///
+/// The legacy `left`/`right` case names describe the two gesture channels:
+/// left Shift starts dictation, while right Option reads selected text.
 public enum OptionKey: Int, CaseIterable, Hashable, Sendable {
-    case left = 58
+    case left = 56
     case right = 61
 }
 
@@ -23,7 +26,9 @@ public struct GestureConfiguration: Equatable, Sendable {
     }
 }
 
-/// Input understood by ``OptionGestureMachine``.
+/// Input understood by ``OptionGestureMachine``. The `optionDown` and
+/// `optionUp` names are retained for source compatibility; events may represent
+/// either the left-Shift dictation channel or right-Option reading channel.
 ///
 /// Time is deliberately supplied to `handle(_:at:)` instead of read from a
 /// clock, which keeps the reducer deterministic and straightforward to test.
@@ -53,7 +58,7 @@ public enum OptionGesturePhase: Equatable, Sendable {
     case recording
 }
 
-/// Recognizes a quick Option tap followed by a sustained Option press.
+/// Recognizes a quick modifier-key tap followed by a sustained press.
 ///
 /// This type has no timer or event-tap dependency. The owner forwards keyboard
 /// events and periodic ticks using a monotonic timestamp, then performs the
@@ -74,7 +79,7 @@ public struct OptionGestureMachine: Sendable {
     }
 
     private var state: State = .idle
-    private var pressedOptionKeys: Set<OptionKey> = []
+    private var pressedGestureKeys: Set<OptionKey> = []
     private var lastTimestamp: TimeInterval?
 
     public init(configuration: GestureConfiguration = GestureConfiguration()) {
@@ -101,7 +106,7 @@ public struct OptionGestureMachine: Sendable {
             if case let .optionUp(key) = event,
                case let .holding(activeKey, _, _) = state,
                activeKey == key,
-               pressedOptionKeys.remove(key) != nil {
+               pressedGestureKeys.remove(key) != nil {
                 var actions: [GestureAction] = []
                 cancelPendingGesture(into: &actions)
                 return actions
@@ -115,13 +120,13 @@ public struct OptionGestureMachine: Sendable {
 
         switch event {
         case let .optionDown(key, clean):
-            guard !pressedOptionKeys.contains(key) else {
+            guard !pressedGestureKeys.contains(key) else {
                 return actions
             }
 
-            let isOnlyOption = pressedOptionKeys.isEmpty
-            pressedOptionKeys.insert(key)
-            let isCleanPress = clean && isOnlyOption
+            let isOnlyGestureKey = pressedGestureKeys.isEmpty
+            pressedGestureKeys.insert(key)
+            let isCleanPress = clean && isOnlyGestureKey
 
             switch state {
             case .idle:
@@ -150,7 +155,7 @@ public struct OptionGestureMachine: Sendable {
             }
 
         case let .optionUp(key):
-            guard pressedOptionKeys.remove(key) != nil else {
+            guard pressedGestureKeys.remove(key) != nil else {
                 return actions
             }
 
@@ -278,7 +283,7 @@ public struct OptionGestureMachine: Sendable {
     private mutating func reset(at timestamp: TimeInterval) {
         state = .idle
         phase = .idle
-        pressedOptionKeys.removeAll(keepingCapacity: true)
+        pressedGestureKeys.removeAll(keepingCapacity: true)
         lastTimestamp = timestamp.isFinite ? timestamp : nil
     }
 }
