@@ -1,6 +1,6 @@
 # Whisper
 
-Whisper 2.4.1 is a small native macOS menu-bar app for voice dictation and local
+Whisper 2.4.2 is a small native macOS menu-bar app for voice dictation and local
 Qwen reading of selected text. The left Option key records, transcribes, and
 inserts speech. A right-Option tap followed by a second, held press reads the
 current selection with Qwen3-TTS 1.7B.
@@ -229,7 +229,7 @@ synchronized state and UTF-16 boundaries to the authenticated extension. The
 first Qwen use installs the pinned `mlx-audio` runtime and downloads the
 1.7B bfloat16 model; later reading is local and reuses that cache.
 
-Audio is written to a private temporary file and removed after success, failure, or cancellation. Whisper does not persist transcripts or record their content in logs. After transcription, Whisper writes the complete text to the shared clipboard and immediately sends a layout-independent physical Command-V shortcut to the application that still owns the focused field. The transcript remains in the clipboard after a successful paste. If the destination changes or insertion cannot finish, the clipboard still contains the transcript and the latest text also remains in memory for an optional retry, but it never blocks the next dictation.
+Audio is written to a private temporary file and removed after success, failure, or cancellation. Whisper does not persist transcripts or record their content in logs. After transcription, Whisper writes the complete text to the shared clipboard and invokes the destination application's standard Paste menu command through Accessibility, which is independent of the active keyboard layout. Applications without an accessible Paste menu use a physical Command-down/V-down/V-up/Command-up fallback backed by private event state. The transcript remains in the clipboard after a successful paste. If the destination changes or insertion cannot finish, the clipboard still contains the transcript and the latest text also remains in memory for an optional retry, but it never blocks the next dictation.
 
 A per-user process lock and `LSMultipleInstancesProhibited` prevent duplicate global monitors, recordings, uploads, and insertions. Launch at Login is opt-in and is never enabled automatically.
 

@@ -20,7 +20,8 @@ public struct TextInsertionTarget: Equatable, Sendable {
 }
 
 public enum TextInsertionMethod: Equatable, Sendable {
-    case clipboardPaste
+    case accessibilityMenuPaste
+    case keyboardShortcutPaste
 }
 
 public enum TextInsertionError: LocalizedError, Sendable {
@@ -70,6 +71,12 @@ public final class TextInsertionService {
         case inspectionFailed
     }
 
+    private enum MenuPasteOutcome: Sendable {
+        case pasted
+        case unavailable
+        case failed
+    }
+
     private enum SecureFieldStatus {
         case notSecure
         case secure
@@ -87,7 +94,7 @@ public final class TextInsertionService {
         }
     }
 
-    private enum StringLookup {
+    private enum StringLookup: Equatable {
         case value(String)
         case unavailable
         case failed
@@ -100,6 +107,9 @@ public final class TextInsertionService {
     private nonisolated static let clipboardPropagationDelayNanoseconds: UInt64 =
         80_000_000
     private nonisolated static let pasteKeyHoldNanoseconds: UInt64 = 35_000_000
+    private nonisolated static let modifierTransitionDelayNanoseconds: UInt64 =
+        20_000_000
+    private nonisolated static let leftCommandKeyCode: CGKeyCode = 55
     private nonisolated static let physicalVKeyCode: CGKeyCode = 9
 
     private let pasteboard: NSPasteboard
@@ -166,8 +176,15 @@ public final class TextInsertionService {
 
         try validate(target)
         try validateFrontmost(target)
-        try await postPasteShortcut()
-        return .clipboardPaste
+        switch await pasteUsingAccessibilityMenu(
+            processIdentifier: target.processIdentifier
+        ) {
+        case .pasted:
+            return .accessibilityMenuPaste
+        case .unavailable, .failed:
+            try await postPasteShortcut()
+            return .keyboardShortcutPaste
+        }
     }
 
     /// Internal for deterministic service verification with a named pasteboard.
@@ -183,11 +200,21 @@ public final class TextInsertionService {
 
     /// Internal so tests can verify the layout-independent shortcut without
     /// posting an event to the user's active application.
-    func makePasteShortcutEvents() throws -> (keyDown: CGEvent, keyUp: CGEvent) {
-        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+    func makePasteShortcutEvents() throws -> (
+        commandDown: CGEvent,
+        keyDown: CGEvent,
+        keyUp: CGEvent,
+        commandUp: CGEvent
+    ) {
+        guard let source = CGEventSource(stateID: .privateState) else {
             throw TextInsertionError.unableToCreateKeyboardEventSource
         }
-        guard let keyDown = CGEvent(
+        guard let commandDown = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: Self.leftCommandKeyCode,
+                  keyDown: true
+              ),
+              let keyDown = CGEvent(
                   keyboardEventSource: source,
                   virtualKey: Self.physicalVKeyCode,
                   keyDown: true
@@ -196,15 +223,22 @@ public final class TextInsertionService {
                   keyboardEventSource: source,
                   virtualKey: Self.physicalVKeyCode,
                   keyDown: false
+              ),
+              let commandUp = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: Self.leftCommandKeyCode,
+                  keyDown: false
               ) else {
             throw TextInsertionError.unableToCreateKeyboardEvent
         }
 
         // Key code 9 is the physical V key, so the shortcut is independent of
         // the active Russian, Ukrainian, or English keyboard layout.
+        commandDown.flags = .maskCommand
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        return (keyDown, keyUp)
+        commandUp.flags = []
+        return (commandDown, keyDown, keyUp, commandUp)
     }
 
     private func validate(_ target: TextInsertionTarget) throws {
@@ -232,13 +266,146 @@ public final class TextInsertionService {
 
     private func postPasteShortcut() async throws {
         let events = try makePasteShortcutEvents()
+        events.commandDown.post(tap: .cghidEventTap)
+        try? await Task.sleep(
+            nanoseconds: Self.modifierTransitionDelayNanoseconds
+        )
         events.keyDown.post(tap: .cghidEventTap)
 
         // Always emit key-up, including when cancellation arrives during the
         // short hold, so the destination never observes a stuck synthetic key.
         try? await Task.sleep(nanoseconds: Self.pasteKeyHoldNanoseconds)
         events.keyUp.post(tap: .cghidEventTap)
+        try? await Task.sleep(
+            nanoseconds: Self.modifierTransitionDelayNanoseconds
+        )
+        events.commandUp.post(tap: .cghidEventTap)
         try Task.checkCancellation()
+    }
+
+    private func pasteUsingAccessibilityMenu(
+        processIdentifier: pid_t
+    ) async -> MenuPasteOutcome {
+        await Task.detached(priority: .userInitiated) {
+            Self.performAccessibilityMenuPaste(
+                processIdentifier: processIdentifier
+            )
+        }.value
+    }
+
+    private nonisolated static func performAccessibilityMenuPaste(
+        processIdentifier: pid_t
+    ) -> MenuPasteOutcome {
+        guard AXIsProcessTrusted() else { return .failed }
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + accessibilityOverallTimeoutNanoseconds
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(
+            application,
+            accessibilityMessagingTimeout
+        )
+
+        switch elementAttribute(
+            kAXMenuBarAttribute,
+            from: application,
+            deadline: deadline
+        ) {
+        case let .element(menuBar):
+            guard let pasteItem = findStandardPasteItem(
+                in: menuBar,
+                deadline: deadline
+            ) else {
+                return .unavailable
+            }
+            guard boolAttribute(
+                kAXEnabledAttribute,
+                from: pasteItem,
+                deadline: deadline
+            ) != false else {
+                return .unavailable
+            }
+            return AXUIElementPerformAction(
+                pasteItem,
+                kAXPressAction as CFString
+            ) == .success ? .pasted : .failed
+        case .unavailable:
+            return .unavailable
+        case .failed:
+            return .failed
+        }
+    }
+
+    private nonisolated static func findStandardPasteItem(
+        in menuBar: AXUIElement,
+        deadline: UInt64
+    ) -> AXUIElement? {
+        for topLevelItem in childElements(
+            of: menuBar,
+            deadline: deadline
+        ) {
+            for menu in childElements(
+                of: topLevelItem,
+                deadline: deadline
+            ) {
+                for item in childElements(of: menu, deadline: deadline) {
+                    let commandCharacter: String?
+                    switch stringAttribute(
+                        kAXMenuItemCmdCharAttribute,
+                        from: item,
+                        deadline: deadline
+                    ) {
+                    case let .value(value):
+                        commandCharacter = value
+                    case .unavailable, .failed:
+                        commandCharacter = nil
+                    }
+
+                    let title: String?
+                    switch stringAttribute(
+                        kAXTitleAttribute,
+                        from: item,
+                        deadline: deadline
+                    ) {
+                    case let .value(value):
+                        title = value
+                    case .unavailable, .failed:
+                        title = nil
+                    }
+
+                    guard isStandardPasteMenuItem(
+                        commandCharacter: commandCharacter,
+                        modifiers: integerAttribute(
+                            kAXMenuItemCmdModifiersAttribute,
+                            from: item,
+                            deadline: deadline
+                        ),
+                        title: title
+                    ) else {
+                        continue
+                    }
+                    return item
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Accessibility exposes the ordinary Paste command as Command-V with no
+    /// extra modifiers. Localized titles cover applications that omit command
+    /// metadata while excluding Paste-and-Match-Style variants.
+    nonisolated static func isStandardPasteMenuItem(
+        commandCharacter: String?,
+        modifiers: Int?,
+        title: String?
+    ) -> Bool {
+        if commandCharacter?.caseInsensitiveCompare("V") == .orderedSame,
+           modifiers == 0 {
+            return true
+        }
+        guard commandCharacter == nil, modifiers == nil, let title else {
+            return false
+        }
+        return ["Paste", "Вставить", "Вставити"].contains(title)
     }
 
     private func inspectFocusedField(
@@ -412,6 +579,62 @@ public final class TextInsertionService {
         }
         guard let string = value as? String else { return .unavailable }
         return .value(string)
+    }
+
+    private nonisolated static func integerAttribute(
+        _ attribute: String,
+        from element: AXUIElement,
+        deadline: UInt64
+    ) -> Int? {
+        guard hasTimeRemaining(until: deadline) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success,
+        let number = value as? NSNumber else {
+            return nil
+        }
+        return number.intValue
+    }
+
+    private nonisolated static func boolAttribute(
+        _ attribute: String,
+        from element: AXUIElement,
+        deadline: UInt64
+    ) -> Bool? {
+        guard hasTimeRemaining(until: deadline) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success,
+        let number = value as? NSNumber else {
+            return nil
+        }
+        return number.boolValue
+    }
+
+    private nonisolated static func childElements(
+        of element: AXUIElement,
+        deadline: UInt64
+    ) -> [AXUIElement] {
+        guard hasTimeRemaining(until: deadline) else { return [] }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXChildrenAttribute as CFString,
+            &value
+        ) == .success,
+        let children = value as? [AXUIElement] else {
+            return []
+        }
+        for child in children {
+            AXUIElementSetMessagingTimeout(child, accessibilityMessagingTimeout)
+        }
+        return children
     }
 
     private nonisolated static func hasTimeRemaining(

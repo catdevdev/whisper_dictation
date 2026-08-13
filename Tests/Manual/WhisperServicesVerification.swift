@@ -362,6 +362,15 @@ private struct Verifier {
 
             let events = try service.makePasteShortcutEvents()
             expectEqual(
+                events.commandDown.getIntegerValueField(.keyboardEventKeycode),
+                Int64(55),
+                "paste shortcut presses the physical Command key first"
+            )
+            expect(
+                events.commandDown.flags.contains(.maskCommand),
+                "Command key-down establishes modifier state"
+            )
+            expectEqual(
                 events.keyDown.getIntegerValueField(.keyboardEventKeycode),
                 Int64(9),
                 "paste shortcut uses the physical V key"
@@ -377,6 +386,39 @@ private struct Verifier {
             expect(
                 events.keyUp.flags.contains(.maskCommand),
                 "paste key-up carries Command"
+            )
+            expectEqual(
+                events.commandUp.getIntegerValueField(.keyboardEventKeycode),
+                Int64(55),
+                "paste shortcut releases the physical Command key last"
+            )
+            expect(
+                !events.commandUp.flags.contains(.maskCommand),
+                "Command key-up clears modifier state"
+            )
+            expect(
+                TextInsertionService.isStandardPasteMenuItem(
+                    commandCharacter: "V",
+                    modifiers: 0,
+                    title: "Paste"
+                ),
+                "ordinary Command-V menu item is selected"
+            )
+            expect(
+                TextInsertionService.isStandardPasteMenuItem(
+                    commandCharacter: nil,
+                    modifiers: nil,
+                    title: "Вставить"
+                ),
+                "localized Paste title is selected when command metadata is absent"
+            )
+            expect(
+                !TextInsertionService.isStandardPasteMenuItem(
+                    commandCharacter: "V",
+                    modifiers: 1,
+                    title: "Paste and Match Style"
+                ),
+                "modified Paste variant is not selected"
             )
         } catch {
             recordFailure("text insertion primitives: \(error)")
