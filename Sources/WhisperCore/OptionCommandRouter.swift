@@ -11,11 +11,11 @@ public enum OptionCommand: Equatable, Sendable {
 
 /// Routes two independent tap-then-hold gestures.
 ///
-/// Left Shift owns the dictation gesture handled by ``OptionGestureMachine``.
-/// Right Option uses the same timing configuration,
-/// but only a quick right-Option tap followed by a clean, sustained
-/// right-Option press may read selected text. Events from one physical key are
-/// never allowed to complete the other key's gesture.
+/// Left Shift owns the faster dictation gesture handled by
+/// ``OptionGestureMachine``. Right Option keeps a longer hold, and only a quick
+/// right-Option tap followed by a clean, sustained right-Option press may read
+/// selected text. Events from one physical key are never allowed to complete
+/// the other key's gesture.
 public struct OptionCommandRouter: Sendable {
     public var dictationPhase: OptionGesturePhase {
         dictationMachine.phase
@@ -30,9 +30,25 @@ public struct OptionCommandRouter: Sendable {
     private var rightOptionIsDown = false
     private var lastRightOptionTimestamp: TimeInterval?
 
-    public init(configuration: GestureConfiguration = GestureConfiguration()) {
-        dictationMachine = OptionGestureMachine(configuration: configuration)
-        readingMachine = OptionGestureMachine(configuration: configuration)
+    public init(
+        dictationConfiguration: GestureConfiguration = .dictation,
+        readingConfiguration: GestureConfiguration = .reading
+    ) {
+        dictationMachine = OptionGestureMachine(
+            configuration: dictationConfiguration
+        )
+        readingMachine = OptionGestureMachine(
+            configuration: readingConfiguration
+        )
+    }
+
+    /// Preserves the existing single-configuration API for callers that
+    /// intentionally want identical timing for both gestures.
+    public init(configuration: GestureConfiguration) {
+        self.init(
+            dictationConfiguration: configuration,
+            readingConfiguration: configuration
+        )
     }
 
     /// Reduces one monitor or timer event into app-level commands.

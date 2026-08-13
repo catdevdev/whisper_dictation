@@ -11,6 +11,12 @@ public enum OptionKey: Int, CaseIterable, Hashable, Sendable {
 
 /// Timing thresholds for the tap-then-hold dictation gesture.
 public struct GestureConfiguration: Equatable, Sendable {
+    /// Faster activation for voice dictation through left Shift.
+    public static let dictation = GestureConfiguration(holdDuration: 1.0)
+
+    /// Reading keeps the longer hold to avoid accidental playback.
+    public static let reading = GestureConfiguration(holdDuration: 1.5)
+
     public var tapMaximum: TimeInterval
     public var secondPressWindow: TimeInterval
     public var holdDuration: TimeInterval

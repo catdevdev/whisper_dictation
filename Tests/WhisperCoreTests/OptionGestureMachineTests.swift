@@ -150,6 +150,8 @@ final class OptionGestureMachineTests: XCTestCase {
         XCTAssertEqual(configuration.tapMaximum, 0.35)
         XCTAssertEqual(configuration.secondPressWindow, 2.0)
         XCTAssertEqual(configuration.holdDuration, 1.5)
+        XCTAssertEqual(GestureConfiguration.dictation.holdDuration, 1.0)
+        XCTAssertEqual(GestureConfiguration.reading.holdDuration, 1.5)
     }
 
     func testQuickTapArmsAtInclusiveTapBoundary() {
@@ -365,7 +367,7 @@ final class OptionGestureMachineTests: XCTestCase {
         )
     }
 
-    func testRouterPreservesCompleteLeftOptionDictationGesture() {
+    func testRouterStartsLeftShiftDictationAfterOneSecond() {
         var router = OptionCommandRouter()
 
         XCTAssertEqual(router.handle(.optionDown(.left, clean: true), at: 0), [])
@@ -378,13 +380,13 @@ final class OptionGestureMachineTests: XCTestCase {
             [.dictation(.holding(progress: 0))]
         )
         XCTAssertEqual(
-            router.handle(.tick, at: 1.7),
+            router.handle(.tick, at: 1.2),
             [.dictation(.holding(progress: 1)), .dictation(.startRecording)]
         )
         XCTAssertEqual(router.dictationPhase, .recording)
-        XCTAssertEqual(router.handle(.optionUp(.left), at: 1.8), [])
+        XCTAssertEqual(router.handle(.optionUp(.left), at: 1.3), [])
         XCTAssertEqual(
-            router.handle(.optionDown(.left, clean: true), at: 2),
+            router.handle(.optionDown(.left, clean: true), at: 1.4),
             [.dictation(.stopRecording)]
         )
         XCTAssertEqual(router.dictationPhase, .idle)
@@ -767,10 +769,10 @@ final class OptionGestureMachineTests: XCTestCase {
             [.dictation(.holding(progress: 0))]
         )
         XCTAssertEqual(
-            router.handle(.tick, at: 1.7),
+            router.handle(.tick, at: 1.2),
             [.dictation(.holding(progress: 1)), .dictation(.startRecording)]
         )
-        XCTAssertEqual(router.handle(.optionUp(.left), at: 1.75), [])
+        XCTAssertEqual(router.handle(.optionUp(.left), at: 1.25), [])
     }
 
     private func armReading(

@@ -18,7 +18,7 @@ extension DictationPhase {
         case .idle:
             "Быстро нажмите левый Shift, затем нажмите и удерживайте его"
         case .armed:
-            "Нажмите левый Shift и держите 1,5 секунды"
+            "Нажмите левый Shift и держите 1 секунду"
         case let .holding(progress):
             progress < 0.55 ? "Ещё немного" : "Почти готово"
         case .recording:

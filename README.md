@@ -1,6 +1,6 @@
 # Whisper
 
-Whisper 2.4.5 is a small native macOS menu-bar app for voice dictation and local
+Whisper 2.4.6 is a small native macOS menu-bar app for voice dictation and local
 Qwen reading of selected text. The left Shift key records, transcribes, and
 inserts speech. A right-Option tap followed by a second, held press reads the
 current selection with Qwen3-TTS 1.7B.
@@ -24,8 +24,8 @@ never a normal readiness gate.
 ### Left Shift: dictate
 
 1. Tap the left `Shift` key quickly.
-2. Press the left `Shift` key again within 2 seconds and hold it for 1.5
-   seconds, until recording starts.
+2. Press the left `Shift` key again within 2 seconds and hold it for 1 second,
+   until recording starts.
 3. Release the key and dictate normally.
 4. Tap the left `Shift` key once to stop, transcribe, and insert the text.
 

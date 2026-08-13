@@ -42,6 +42,16 @@ private struct Verifier {
         expectEqual(defaults.tapMaximum, 0.35, "default tap boundary")
         expectEqual(defaults.secondPressWindow, 2.0, "default second-press window")
         expectEqual(defaults.holdDuration, 1.5, "default hold threshold")
+        expectEqual(
+            GestureConfiguration.dictation.holdDuration,
+            1.0,
+            "dictation hold threshold is 33 percent faster"
+        )
+        expectEqual(
+            GestureConfiguration.reading.holdDuration,
+            1.5,
+            "reading hold threshold remains unchanged"
+        )
     }
 
     mutating func verifyGestureBoundaries() {
@@ -408,9 +418,9 @@ private struct Verifier {
             "router left second press starts hold"
         )
         expectEqual(
-            dictation.handle(.tick, at: 1.7),
+            dictation.handle(.tick, at: 1.2),
             [.dictation(.holding(progress: 1)), .dictation(.startRecording)],
-            "router left hold starts recording"
+            "router left hold starts recording after one second"
         )
         expectEqual(
             dictation.handle(.optionUp(.left), at: 1.8),
