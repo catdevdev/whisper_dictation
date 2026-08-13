@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import OSLog
 
 /// The application that owns the field where text should be inserted.
 public struct TextInsertionTarget: Equatable, Sendable {
@@ -20,8 +21,9 @@ public struct TextInsertionTarget: Equatable, Sendable {
 }
 
 public enum TextInsertionMethod: Equatable, Sendable {
+    case accessibilityValueInsertion
     case accessibilityMenuPaste
-    case keyboardShortcutPaste
+    case unicodeTextInsertion
 }
 
 public enum TextInsertionError: LocalizedError, Sendable {
@@ -52,15 +54,15 @@ public enum TextInsertionError: LocalizedError, Sendable {
         case .unableToWritePasteboard:
             "The transcript could not be written to the clipboard."
         case .unableToCreateKeyboardEventSource:
-            "A paste keyboard event source could not be created."
+            "A Unicode text event source could not be created."
         case .unableToCreateKeyboardEvent:
-            "A paste keyboard event could not be created."
+            "A Unicode text event could not be created."
         }
     }
 }
 
-/// Copies a transcript to the shared clipboard, then pastes it into the
-/// frontmost captured destination without entering the global HID stream.
+/// Copies a transcript to the shared clipboard, then inserts it into the
+/// frontmost captured destination without relying on a physical V key.
 @MainActor
 public final class TextInsertionService {
     private enum FocusedFieldInspectionOutcome: Sendable {
@@ -74,6 +76,14 @@ public final class TextInsertionService {
     private enum MenuPasteOutcome: Sendable {
         case pasted
         case unavailable
+        case failed
+    }
+
+    enum AccessibilityTextInsertionOutcome: Equatable, Sendable {
+        case inserted
+        case unavailable
+        case accessibilityPermissionRequired
+        case secureTextField
         case failed
     }
 
@@ -104,13 +114,17 @@ public final class TextInsertionService {
     private nonisolated static let accessibilityOverallTimeoutNanoseconds: UInt64 =
         900_000_000
     private nonisolated static let maximumSecureFieldAncestorDepth = 4
+    private nonisolated static let maximumTextAncestorDepth = 8
     private nonisolated static let clipboardPropagationDelayNanoseconds: UInt64 =
         80_000_000
-    private nonisolated static let pasteKeyHoldNanoseconds: UInt64 = 35_000_000
-    private nonisolated static let modifierTransitionDelayNanoseconds: UInt64 =
-        20_000_000
-    private nonisolated static let leftCommandKeyCode: CGKeyCode = 55
-    private nonisolated static let physicalVKeyCode: CGKeyCode = 9
+    private nonisolated static let unicodeKeyHoldNanoseconds: UInt64 = 8_000_000
+    private nonisolated static let unicodeEventDelayNanoseconds: UInt64 = 8_000_000
+    private nonisolated static let maximumUnicodeUnitsPerEvent = 16
+    private nonisolated static let unicodeCarrierKeyCode: CGKeyCode = 0
+    private nonisolated static let logger = Logger(
+        subsystem: "com.nekoneki.whisper-dictation.app",
+        category: "TextInsertion"
+    )
 
     private let pasteboard: NSPasteboard
     private let eventPoster: (CGEvent, pid_t) -> Void
@@ -122,8 +136,8 @@ public final class TextInsertionService {
         }
     }
 
-    /// Internal injection seam for verifying that fallback events stay scoped
-    /// to the captured destination instead of entering the global HID stream.
+    /// Internal injection seam for verifying that Unicode fallback events stay
+    /// scoped to the destination instead of entering the global HID stream.
     init(
         pasteboard: NSPasteboard,
         eventPoster: @escaping (CGEvent, pid_t) -> Void
@@ -152,8 +166,8 @@ public final class TextInsertionService {
         )
     }
 
-    /// Leaves the transcript on the shared clipboard and triggers Paste only
-    /// after confirming that the captured destination is still frontmost.
+    /// Leaves the transcript on the shared clipboard and inserts it only after
+    /// confirming that the captured destination is still frontmost.
     @discardableResult
     public func insert(
         _ text: String,
@@ -162,7 +176,7 @@ public final class TextInsertionService {
         try Task.checkCancellation()
 
         // Copy first so a successfully transcribed result remains recoverable
-        // even when the destination disappears or rejects the paste shortcut.
+        // even when the destination disappears or rejects text insertion.
         try writeTranscriptToClipboard(text)
         try validate(target)
 
@@ -178,7 +192,7 @@ public final class TextInsertionService {
         }
 
         // The pasteboard API is synchronous, but a short boundary before the
-        // shortcut matches how native applications observe a new owner reliably.
+        // insertion matches how native applications observe a new owner reliably.
         try await Task.sleep(nanoseconds: Self.clipboardPropagationDelayNanoseconds)
         try Task.checkCancellation()
         guard pasteboard.string(forType: .string) == text else {
@@ -194,10 +208,62 @@ public final class TextInsertionService {
             processIdentifier: target.processIdentifier
         ) {
         case .pasted:
+            Self.logInsertionRoute(
+                "accessibility-menu",
+                target: target
+            )
             return .accessibilityMenuPaste
-        case .unavailable, .failed:
-            try await postPasteShortcut(to: target.processIdentifier)
-            return .keyboardShortcutPaste
+        case .unavailable:
+            Self.logUnavailableRoute(
+                "accessibility-menu",
+                target: target
+            )
+        case .failed:
+            Self.logFailedRoute(
+                "accessibility-menu",
+                target: target
+            )
+            break
+        }
+
+        try validate(target)
+        try validateFrontmost(target)
+        switch await insertUsingAccessibilityValue(
+            text,
+            processIdentifier: target.processIdentifier
+        ) {
+        case .inserted:
+            Self.logInsertionRoute(
+                "accessibility-value",
+                target: target
+            )
+            return .accessibilityValueInsertion
+        case .accessibilityPermissionRequired:
+            throw TextInsertionError.accessibilityPermissionRequired
+        case .secureTextField:
+            throw TextInsertionError.secureTextField
+        case .unavailable:
+            Self.logUnavailableRoute(
+                "accessibility-value",
+                target: target
+            )
+            try await postUnicodeText(
+                text,
+                to: target.processIdentifier
+            )
+            Self.logInsertionRoute("unicode-events", target: target)
+            return .unicodeTextInsertion
+        case .failed:
+            Self.logFailedRoute(
+                "accessibility-value",
+                target: target
+            )
+            try await postUnicodeText(
+                text,
+                to: target.processIdentifier
+            )
+            Self.logInsertionRoute("unicode-events", target: target)
+            return .unicodeTextInsertion
         }
     }
 
@@ -212,48 +278,94 @@ public final class TextInsertionService {
         return pasteboard.changeCount
     }
 
-    /// Internal so tests can verify the layout-independent shortcut without
-    /// posting an event to the user's active application.
-    func makePasteShortcutEvents() throws -> (
-        commandDown: CGEvent,
-        keyDown: CGEvent,
-        keyUp: CGEvent,
-        commandUp: CGEvent
-    ) {
+    /// Creates targeted text events with an explicit Unicode payload. The
+    /// carrier key is never V, and no keyboard-layout modifier participates.
+    func makeUnicodeInsertionEvents(
+        _ text: String
+    ) throws -> [(text: String, keyDown: CGEvent, keyUp: CGEvent)] {
         guard let source = CGEventSource(stateID: .privateState) else {
             throw TextInsertionError.unableToCreateKeyboardEventSource
         }
-        guard let commandDown = CGEvent(
-                  keyboardEventSource: source,
-                  virtualKey: Self.leftCommandKeyCode,
-                  keyDown: true
-              ),
-              let keyDown = CGEvent(
-                  keyboardEventSource: source,
-                  virtualKey: Self.physicalVKeyCode,
-                  keyDown: true
-              ),
-              let keyUp = CGEvent(
-                  keyboardEventSource: source,
-                  virtualKey: Self.physicalVKeyCode,
-                  keyDown: false
-              ),
-              let commandUp = CGEvent(
-                  keyboardEventSource: source,
-                  virtualKey: Self.leftCommandKeyCode,
-                  keyDown: false
-              ) else {
-            throw TextInsertionError.unableToCreateKeyboardEvent
+        return try Self.unicodeChunks(text).map { chunk in
+            guard let keyDown = CGEvent(
+                      keyboardEventSource: source,
+                      virtualKey: Self.unicodeCarrierKeyCode,
+                      keyDown: true
+                  ),
+                  let keyUp = CGEvent(
+                      keyboardEventSource: source,
+                      virtualKey: Self.unicodeCarrierKeyCode,
+                      keyDown: false
+                  ) else {
+                throw TextInsertionError.unableToCreateKeyboardEvent
+            }
+            let units = Array(chunk.utf16)
+            units.withUnsafeBufferPointer { buffer in
+                keyDown.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+            }
+            keyDown.flags = []
+            keyUp.flags = []
+            return (chunk, keyDown, keyUp)
+        }
+    }
+
+    nonisolated static func unicodeChunks(_ text: String) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        var currentUnitCount = 0
+
+        for character in text {
+            let characterText = String(character)
+            let characterUnitCount = characterText.utf16.count
+            if !current.isEmpty,
+               currentUnitCount + characterUnitCount
+                   > maximumUnicodeUnitsPerEvent {
+                chunks.append(current)
+                current = ""
+                currentUnitCount = 0
+            }
+            current.append(character)
+            currentUnitCount += characterUnitCount
+        }
+        if !current.isEmpty {
+            chunks.append(current)
+        }
+        return chunks
+    }
+
+    /// Computes an AXValue edit using the UTF-16 offsets exposed by macOS
+    /// Accessibility. Internal for deterministic Unicode/caret regression tests.
+    nonisolated static func replacingTextValue(
+        _ currentValue: String,
+        selectedRange: CFRange,
+        with insertedText: String
+    ) -> (value: String, caretRange: CFRange)? {
+        let source = currentValue as NSString
+        guard selectedRange.location >= 0,
+              selectedRange.length >= 0,
+              selectedRange.location <= source.length,
+              selectedRange.length <= source.length - selectedRange.location else {
+            return nil
         }
 
-        // The sequence is posted directly to the captured process. Explicit
-        // Command state therefore reaches the destination without a global
-        // input remapper translating physical key code 9 first.
-        commandDown.flags = .maskCommand
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
-        commandUp.flags = []
-        return (commandDown, keyDown, keyUp, commandUp)
+        let value = source.replacingCharacters(
+            in: NSRange(
+                location: selectedRange.location,
+                length: selectedRange.length
+            ),
+            with: insertedText
+        )
+        return (
+            value,
+            CFRange(
+                location: selectedRange.location
+                    + (insertedText as NSString).length,
+                length: 0
+            )
+        )
     }
 
     private func validate(_ target: TextInsertionTarget) throws {
@@ -279,25 +391,293 @@ public final class TextInsertionService {
         }
     }
 
-    /// Internal so the regression suite can prove every fallback event targets
-    /// the captured process and never traverses Karabiner's global HID path.
-    func postPasteShortcut(to processIdentifier: pid_t) async throws {
-        let events = try makePasteShortcutEvents()
-        eventPoster(events.commandDown, processIdentifier)
-        try? await Task.sleep(
-            nanoseconds: Self.modifierTransitionDelayNanoseconds
-        )
-        eventPoster(events.keyDown, processIdentifier)
+    /// Internal so tests can prove fallback carries the transcript itself and
+    /// never emits a physical V that RussianWin could translate into "м".
+    func postUnicodeText(
+        _ text: String,
+        to processIdentifier: pid_t
+    ) async throws {
+        for events in try makeUnicodeInsertionEvents(text) {
+            eventPoster(events.keyDown, processIdentifier)
+            // Keep key-up guaranteed even if cancellation arrives mid-event.
+            try? await Task.sleep(
+                nanoseconds: Self.unicodeKeyHoldNanoseconds
+            )
+            eventPoster(events.keyUp, processIdentifier)
+            try await Task.sleep(
+                nanoseconds: Self.unicodeEventDelayNanoseconds
+            )
+        }
+    }
 
-        // Always emit key-up, including when cancellation arrives during the
-        // short hold, so the destination never observes a stuck synthetic key.
-        try? await Task.sleep(nanoseconds: Self.pasteKeyHoldNanoseconds)
-        eventPoster(events.keyUp, processIdentifier)
-        try? await Task.sleep(
-            nanoseconds: Self.modifierTransitionDelayNanoseconds
+    private func insertUsingAccessibilityValue(
+        _ text: String,
+        processIdentifier: pid_t
+    ) async -> AccessibilityTextInsertionOutcome {
+        await Task.detached(priority: .userInitiated) {
+            Self.performAccessibilityTextInsertion(
+                text,
+                processIdentifier: processIdentifier
+            )
+        }.value
+    }
+
+    /// Uses the editable element's AXValue and AXSelectedTextRange so no
+    /// keyboard event, input source, or remapper participates in insertion.
+    nonisolated static func performAccessibilityTextInsertion(
+        _ text: String,
+        processIdentifier: pid_t
+    ) -> AccessibilityTextInsertionOutcome {
+        guard AXIsProcessTrusted() else {
+            return .accessibilityPermissionRequired
+        }
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + accessibilityOverallTimeoutNanoseconds
+        let focused: AXUIElement
+        switch focusedElement(for: processIdentifier, deadline: deadline) {
+        case let .element(element):
+            focused = element
+        case .unavailable:
+            return .unavailable
+        case .failed:
+            return .failed
+        }
+
+        switch secureFieldStatus(for: focused, deadline: deadline) {
+        case .secure:
+            return .secureTextField
+        case .inspectionFailed:
+            return .failed
+        case .notSecure:
+            break
+        }
+
+        // Setting AXValue on a browser-backed control can bypass the DOM input
+        // event expected by web frameworks. Let Unicode key events reach those
+        // editors instead, while retaining direct AX edits for native fields.
+        guard !isWebBackedOrIndeterminate(
+            focused,
+            deadline: deadline
+        ) else {
+            return .unavailable
+        }
+
+        var current = focused
+        var visited: [AXUIElement] = []
+        var observedFailure = false
+
+        for depth in 0...maximumTextAncestorDepth {
+            visited.append(current)
+            switch replaceSelectedTextValue(
+                text,
+                in: current,
+                deadline: deadline
+            ) {
+            case .inserted:
+                return .inserted
+            case .failed:
+                observedFailure = true
+            case .unavailable, .accessibilityPermissionRequired, .secureTextField:
+                break
+            }
+
+            guard depth < maximumTextAncestorDepth else { break }
+            switch elementAttribute(
+                kAXParentAttribute,
+                from: current,
+                deadline: deadline
+            ) {
+            case let .element(parent):
+                guard !visited.contains(where: { CFEqual($0, parent) }) else {
+                    break
+                }
+                current = parent
+            case .unavailable:
+                break
+            case .failed:
+                observedFailure = true
+                break
+            }
+        }
+
+        return observedFailure ? .failed : .unavailable
+    }
+
+    nonisolated static func replaceSelectedTextValue(
+        _ text: String,
+        in element: AXUIElement,
+        deadline: UInt64
+    ) -> AccessibilityTextInsertionOutcome {
+        let role: String?
+        switch stringAttribute(
+            kAXRoleAttribute,
+            from: element,
+            deadline: deadline
+        ) {
+        case let .value(value):
+            role = value
+        case .unavailable:
+            role = nil
+        case .failed:
+            return .failed
+        }
+        guard isEditableTextRole(role) else { return .unavailable }
+
+        guard attributeIsSettable(
+            kAXValueAttribute,
+            on: element,
+            deadline: deadline
+        ) else {
+            return .unavailable
+        }
+
+        let currentValue: String
+        switch stringAttribute(
+            kAXValueAttribute,
+            from: element,
+            deadline: deadline
+        ) {
+        case let .value(value):
+            currentValue = value
+        case .unavailable:
+            return .unavailable
+        case .failed:
+            return .failed
+        }
+
+        let selectedRange: CFRange
+        if let range = rangeAttribute(
+            kAXSelectedTextRangeAttribute,
+            from: element,
+            deadline: deadline
+        ) {
+            selectedRange = range
+        } else if currentValue.isEmpty {
+            selectedRange = CFRange(location: 0, length: 0)
+        } else {
+            return .unavailable
+        }
+
+        guard let replacement = replacingTextValue(
+            currentValue,
+            selectedRange: selectedRange,
+            with: text
+        ) else {
+            return .failed
+        }
+
+        guard hasTimeRemaining(until: deadline) else { return .failed }
+        let setResult = AXUIElementSetAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            replacement.value as CFString
         )
-        eventPoster(events.commandUp, processIdentifier)
-        try Task.checkCancellation()
+        guard setResult == .success else {
+            if setResult == .cannotComplete,
+               case let .value(observedValue) = stringAttribute(
+                   kAXValueAttribute,
+                   from: element,
+                   deadline: deadline
+               ),
+               observedValue == replacement.value {
+                return .inserted
+            }
+            return setResult == .attributeUnsupported
+                || setResult == .noValue
+                || setResult == .notImplemented
+                ? .unavailable
+                : .failed
+        }
+
+        if attributeIsSettable(
+            kAXSelectedTextRangeAttribute,
+            on: element,
+            deadline: deadline
+        ), var caretRange = Optional(replacement.caretRange),
+           let caretValue = AXValueCreate(.cfRange, &caretRange) {
+            _ = AXUIElementSetAttributeValue(
+                element,
+                kAXSelectedTextRangeAttribute as CFString,
+                caretValue
+            )
+        }
+        return .inserted
+    }
+
+    nonisolated static func isEditableTextRole(_ role: String?) -> Bool {
+        guard let role else { return false }
+        return role == (kAXTextFieldRole as String)
+            || role == (kAXTextAreaRole as String)
+            || role == (kAXComboBoxRole as String)
+    }
+
+    private nonisolated static func isWebBackedOrIndeterminate(
+        _ element: AXUIElement,
+        deadline: UInt64
+    ) -> Bool {
+        var current = element
+        var visited: [AXUIElement] = []
+
+        for depth in 0...maximumTextAncestorDepth {
+            visited.append(current)
+            switch stringAttribute(
+                kAXRoleAttribute,
+                from: current,
+                deadline: deadline
+            ) {
+            case let .value(role):
+                if role == "AXWebArea" { return true }
+            case .unavailable:
+                break
+            case .failed:
+                return true
+            }
+
+            guard depth < maximumTextAncestorDepth else { break }
+            switch elementAttribute(
+                kAXParentAttribute,
+                from: current,
+                deadline: deadline
+            ) {
+            case let .element(parent):
+                guard !visited.contains(where: { CFEqual($0, parent) }) else {
+                    return false
+                }
+                current = parent
+            case .unavailable:
+                return false
+            case .failed:
+                return true
+            }
+        }
+        return false
+    }
+
+    private nonisolated static func logInsertionRoute(
+        _ route: String,
+        target: TextInsertionTarget
+    ) {
+        logger.notice(
+            "Insertion succeeded route=\(route, privacy: .public) target=\(target.bundleIdentifier ?? "unknown", privacy: .public)"
+        )
+    }
+
+    private nonisolated static func logUnavailableRoute(
+        _ route: String,
+        target: TextInsertionTarget
+    ) {
+        logger.info(
+            "Insertion unavailable route=\(route, privacy: .public) target=\(target.bundleIdentifier ?? "unknown", privacy: .public)"
+        )
+    }
+
+    private nonisolated static func logFailedRoute(
+        _ route: String,
+        target: TextInsertionTarget
+    ) {
+        logger.error(
+            "Insertion failed route=\(route, privacy: .public) target=\(target.bundleIdentifier ?? "unknown", privacy: .public)"
+        )
     }
 
     private func pasteUsingAccessibilityMenu(
@@ -632,6 +1012,47 @@ public final class TextInsertionService {
             return nil
         }
         return number.boolValue
+    }
+
+    private nonisolated static func attributeIsSettable(
+        _ attribute: String,
+        on element: AXUIElement,
+        deadline: UInt64
+    ) -> Bool {
+        guard hasTimeRemaining(until: deadline) else { return false }
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(
+            element,
+            attribute as CFString,
+            &settable
+        ) == .success else {
+            return false
+        }
+        return settable.boolValue
+    }
+
+    private nonisolated static func rangeAttribute(
+        _ attribute: String,
+        from element: AXUIElement,
+        deadline: UInt64
+    ) -> CFRange? {
+        guard hasTimeRemaining(until: deadline) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            attribute as CFString,
+            &value
+        ) == .success,
+        let value,
+        CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cfRange else { return nil }
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(axValue, .cfRange, &range) else { return nil }
+        return range
     }
 
     private nonisolated static func childElements(

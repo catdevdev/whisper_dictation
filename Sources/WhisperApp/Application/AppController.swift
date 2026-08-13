@@ -1293,7 +1293,7 @@ final class AppController: ObservableObject {
             case .unableToWritePasteboard:
                 return "Текст распознан, но macOS не записала его в буфер обмена. Повторите попытку."
             case .unableToCreateKeyboardEventSource, .unableToCreateKeyboardEvent:
-                return "Текст сохранён в буфере, но macOS не создала Cmd+V. Вставьте его вручную."
+                return "Текст сохранён в буфере, но macOS не создала событие Unicode-вставки. Вставьте его вручную."
             }
         }
 

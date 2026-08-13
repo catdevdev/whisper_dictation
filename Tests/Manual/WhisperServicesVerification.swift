@@ -344,14 +344,19 @@ private struct Verifier {
                 "com.nekoneki.whisper.tests.\(UUID().uuidString)"
             )
         )
-        var postedEvents: [(processIdentifier: pid_t, keyCode: Int64)] = []
+        var postedEvents: [(
+            processIdentifier: pid_t,
+            keyCode: Int64,
+            text: String
+        )] = []
         let service = TextInsertionService(
             pasteboard: pasteboard,
             eventPoster: { event, processIdentifier in
                 postedEvents.append(
                     (
                         processIdentifier,
-                        event.getIntegerValueField(.keyboardEventKeycode)
+                        event.getIntegerValueField(.keyboardEventKeycode),
+                        Self.unicodeString(from: event)
                     )
                 )
             }
@@ -371,52 +376,112 @@ private struct Verifier {
                 "clipboard retains the complete Unicode transcript"
             )
 
-            let events = try service.makePasteShortcutEvents()
-            expectEqual(
-                events.commandDown.getIntegerValueField(.keyboardEventKeycode),
-                Int64(55),
-                "paste shortcut presses the physical Command key first"
-            )
+            let events = try service.makeUnicodeInsertionEvents(transcript)
             expect(
-                events.commandDown.flags.contains(.maskCommand),
-                "Command key-down establishes modifier state"
+                events.count > 1,
+                "long Unicode fallback is split into bounded events"
             )
             expectEqual(
-                events.keyDown.getIntegerValueField(.keyboardEventKeycode),
-                Int64(9),
-                "paste shortcut uses the physical V key"
+                events.map(\.text).joined(),
+                transcript,
+                "Unicode event chunks preserve the complete transcript"
             )
             expect(
-                events.keyDown.flags.contains(.maskCommand),
-                "paste key-down carries Command"
+                events.allSatisfy {
+                    $0.keyDown.getIntegerValueField(.keyboardEventKeycode)
+                        != Int64(9)
+                },
+                "Unicode fallback never emits the physical V key"
             )
             expect(
-                !events.keyDown.flags.contains(.maskAlternate),
-                "paste key-down clears residual Option"
-            )
-            expect(
-                events.keyUp.flags.contains(.maskCommand),
-                "paste key-up carries Command"
+                events.allSatisfy {
+                    !$0.keyDown.flags.contains(.maskCommand)
+                        && !$0.keyDown.flags.contains(.maskAlternate)
+                },
+                "Unicode fallback carries no layout-sensitive modifiers"
             )
             expectEqual(
-                events.commandUp.getIntegerValueField(.keyboardEventKeycode),
-                Int64(55),
-                "paste shortcut releases the physical Command key last"
+                events.map { Self.unicodeString(from: $0.keyDown) }.joined(),
+                transcript,
+                "key-down events carry the transcript as Unicode payload"
             )
-            expect(
-                !events.commandUp.flags.contains(.maskCommand),
-                "Command key-up clears modifier state"
-            )
-            try await service.postPasteShortcut(to: 42_424)
+            try await service.postUnicodeText(transcript, to: 42_424)
             expectEqual(
                 postedEvents.map(\.processIdentifier),
-                [42_424, 42_424, 42_424, 42_424],
-                "every paste event targets the captured process"
+                Array(repeating: 42_424, count: events.count * 2),
+                "every Unicode event targets the captured process"
+            )
+            expect(
+                postedEvents.allSatisfy { $0.keyCode != 9 },
+                "posted Unicode events cannot become Russian letter м"
             )
             expectEqual(
-                postedEvents.map(\.keyCode),
-                [55, 9, 9, 55],
-                "targeted paste preserves the complete Command-V sequence"
+                stride(from: 0, to: postedEvents.count, by: 2)
+                    .map { postedEvents[$0].text }
+                    .joined(),
+                transcript,
+                "posted key-down events retain all Unicode text"
+            )
+            if let replacement = TextInsertionService.replacingTextValue(
+                "Привет мир",
+                selectedRange: CFRange(location: 7, length: 3),
+                with: "👋"
+            ) {
+                expectEqual(
+                    replacement.value,
+                    "Привет 👋",
+                    "Accessibility insertion replaces the selected Unicode text"
+                )
+                expectEqual(
+                    replacement.caretRange.location,
+                    9,
+                    "Accessibility insertion advances the caret in UTF-16 units"
+                )
+                expectEqual(
+                    replacement.caretRange.length,
+                    0,
+                    "Accessibility insertion collapses the selection after text"
+                )
+            } else {
+                recordFailure("valid Accessibility selection replacement")
+            }
+            if let insertion = TextInsertionService.replacingTextValue(
+                "A👋Б",
+                selectedRange: CFRange(location: 3, length: 0),
+                with: "тест"
+            ) {
+                expectEqual(
+                    insertion.value,
+                    "A👋тестБ",
+                    "Accessibility insertion preserves surrogate-pair boundaries"
+                )
+                expectEqual(
+                    insertion.caretRange.location,
+                    7,
+                    "Accessibility caret remains correct after an emoji"
+                )
+            } else {
+                recordFailure("valid Accessibility caret insertion")
+            }
+            expect(
+                TextInsertionService.replacingTextValue(
+                    "abc",
+                    selectedRange: CFRange(location: 2, length: 4),
+                    with: "x"
+                ) == nil,
+                "Accessibility insertion rejects an out-of-bounds selection"
+            )
+            expect(
+                TextInsertionService.isEditableTextRole("AXTextField"),
+                "Accessibility value insertion accepts text fields"
+            )
+            expect(
+                TextInsertionService.isEditableTextRole("AXTextArea"),
+                "Accessibility value insertion accepts text areas"
+            )
+            expect(
+                !TextInsertionService.isEditableTextRole("AXWebArea"),
+                "Accessibility value insertion rejects web-area containers"
             )
             expect(
                 TextInsertionService.isStandardPasteMenuItem(
@@ -633,6 +698,19 @@ private struct Verifier {
         } catch {
             recordFailure("single-instance guard: \(error)")
         }
+    }
+
+    private static func unicodeString(from event: CGEvent) -> String {
+        var actualLength = 0
+        var units = [UniChar](repeating: 0, count: 256)
+        units.withUnsafeMutableBufferPointer { buffer in
+            event.keyboardGetUnicodeString(
+                maxStringLength: buffer.count,
+                actualStringLength: &actualLength,
+                unicodeString: buffer.baseAddress
+            )
+        }
+        return String(decoding: units.prefix(actualLength), as: UTF16.self)
     }
 
     private mutating func expect(

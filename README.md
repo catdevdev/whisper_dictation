@@ -1,6 +1,6 @@
 # Whisper
 
-Whisper 2.4.3 is a small native macOS menu-bar app for voice dictation and local
+Whisper 2.4.4 is a small native macOS menu-bar app for voice dictation and local
 Qwen reading of selected text. The left Option key records, transcribes, and
 inserts speech. A right-Option tap followed by a second, held press reads the
 current selection with Qwen3-TTS 1.7B.
@@ -229,7 +229,7 @@ synchronized state and UTF-16 boundaries to the authenticated extension. The
 first Qwen use installs the pinned `mlx-audio` runtime and downloads the
 1.7B bfloat16 model; later reading is local and reuses that cache.
 
-Audio is written to a private temporary file and removed after success, failure, or cancellation. Whisper does not persist transcripts or record their content in logs. After transcription, Whisper writes the complete text to the shared clipboard and invokes the destination application's standard Paste menu command through Accessibility, which is independent of the active keyboard layout. Applications without an accessible Paste menu receive a Command-down/V-down/V-up/Command-up fallback directly in the captured process event stream; it never enters the global HID stream used by keyboard remappers such as Karabiner-Elements. The transcript remains in the clipboard after a successful paste. If the destination changes or insertion cannot finish, the clipboard still contains the transcript and the latest text also remains in memory for an optional retry, but it never blocks the next dictation.
+Audio is written to a private temporary file and removed after success, failure, or cancellation. Whisper does not persist transcripts or record their content in logs. After transcription, Whisper writes the complete text to the shared clipboard and invokes the destination application's standard Paste menu command through Accessibility, which is independent of the active keyboard layout. If that command is unavailable, Whisper inserts through the native editable Accessibility value or targeted Unicode text events. Neither fallback emits a physical V key or Command modifier, so Russian keyboard layouts and remappers such as Karabiner-Elements cannot translate the insertion into «м». The transcript remains in the clipboard after a successful insertion. If the destination changes or insertion cannot finish, the clipboard still contains the transcript and the latest text also remains in memory for an optional retry, but it never blocks the next dictation.
 
 A per-user process lock and `LSMultipleInstancesProhibited` prevent duplicate global monitors, recordings, uploads, and insertions. Launch at Login is opt-in and is never enabled automatically.
 
