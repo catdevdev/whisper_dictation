@@ -60,7 +60,7 @@ public enum TextInsertionError: LocalizedError, Sendable {
 }
 
 /// Copies a transcript to the shared clipboard, then pastes it into the
-/// frontmost captured destination with the physical Command-V shortcut.
+/// frontmost captured destination without entering the global HID stream.
 @MainActor
 public final class TextInsertionService {
     private enum FocusedFieldInspectionOutcome: Sendable {
@@ -113,9 +113,23 @@ public final class TextInsertionService {
     private nonisolated static let physicalVKeyCode: CGKeyCode = 9
 
     private let pasteboard: NSPasteboard
+    private let eventPoster: (CGEvent, pid_t) -> Void
 
     public init(pasteboard: NSPasteboard = .general) {
         self.pasteboard = pasteboard
+        self.eventPoster = { event, processIdentifier in
+            event.postToPid(processIdentifier)
+        }
+    }
+
+    /// Internal injection seam for verifying that fallback events stay scoped
+    /// to the captured destination instead of entering the global HID stream.
+    init(
+        pasteboard: NSPasteboard,
+        eventPoster: @escaping (CGEvent, pid_t) -> Void
+    ) {
+        self.pasteboard = pasteboard
+        self.eventPoster = eventPoster
     }
 
     /// Resolves the frontmost destination at the moment recording begins.
@@ -138,7 +152,7 @@ public final class TextInsertionService {
         )
     }
 
-    /// Leaves the transcript on the shared clipboard and sends Command-V only
+    /// Leaves the transcript on the shared clipboard and triggers Paste only
     /// after confirming that the captured destination is still frontmost.
     @discardableResult
     public func insert(
@@ -182,7 +196,7 @@ public final class TextInsertionService {
         case .pasted:
             return .accessibilityMenuPaste
         case .unavailable, .failed:
-            try await postPasteShortcut()
+            try await postPasteShortcut(to: target.processIdentifier)
             return .keyboardShortcutPaste
         }
     }
@@ -232,8 +246,9 @@ public final class TextInsertionService {
             throw TextInsertionError.unableToCreateKeyboardEvent
         }
 
-        // Key code 9 is the physical V key, so the shortcut is independent of
-        // the active Russian, Ukrainian, or English keyboard layout.
+        // The sequence is posted directly to the captured process. Explicit
+        // Command state therefore reaches the destination without a global
+        // input remapper translating physical key code 9 first.
         commandDown.flags = .maskCommand
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
@@ -264,22 +279,24 @@ public final class TextInsertionService {
         }
     }
 
-    private func postPasteShortcut() async throws {
+    /// Internal so the regression suite can prove every fallback event targets
+    /// the captured process and never traverses Karabiner's global HID path.
+    func postPasteShortcut(to processIdentifier: pid_t) async throws {
         let events = try makePasteShortcutEvents()
-        events.commandDown.post(tap: .cghidEventTap)
+        eventPoster(events.commandDown, processIdentifier)
         try? await Task.sleep(
             nanoseconds: Self.modifierTransitionDelayNanoseconds
         )
-        events.keyDown.post(tap: .cghidEventTap)
+        eventPoster(events.keyDown, processIdentifier)
 
         // Always emit key-up, including when cancellation arrives during the
         // short hold, so the destination never observes a stuck synthetic key.
         try? await Task.sleep(nanoseconds: Self.pasteKeyHoldNanoseconds)
-        events.keyUp.post(tap: .cghidEventTap)
+        eventPoster(events.keyUp, processIdentifier)
         try? await Task.sleep(
             nanoseconds: Self.modifierTransitionDelayNanoseconds
         )
-        events.commandUp.post(tap: .cghidEventTap)
+        eventPoster(events.commandUp, processIdentifier)
         try Task.checkCancellation()
     }
 

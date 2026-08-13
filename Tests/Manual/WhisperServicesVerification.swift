@@ -14,7 +14,7 @@ private enum WhisperServicesVerification {
         var verifier = Verifier()
 
         await verifier.verifyOpenAIClient()
-        verifier.verifyTextInsertionPrimitives()
+        await verifier.verifyTextInsertionPrimitives()
         verifier.verifyKeychainRoundTrip()
         verifier.verifyAudioRecorderFilePolicy()
         verifier.verifySingleInstanceGuard()
@@ -338,13 +338,24 @@ private struct Verifier {
         }
     }
 
-    mutating func verifyTextInsertionPrimitives() {
+    mutating func verifyTextInsertionPrimitives() async {
         let pasteboard = NSPasteboard(
             name: NSPasteboard.Name(
                 "com.nekoneki.whisper.tests.\(UUID().uuidString)"
             )
         )
-        let service = TextInsertionService(pasteboard: pasteboard)
+        var postedEvents: [(processIdentifier: pid_t, keyCode: Int64)] = []
+        let service = TextInsertionService(
+            pasteboard: pasteboard,
+            eventPoster: { event, processIdentifier in
+                postedEvents.append(
+                    (
+                        processIdentifier,
+                        event.getIntegerValueField(.keyboardEventKeycode)
+                    )
+                )
+            }
+        )
         let transcript = "Привіт, мир 👋 — clipboard paste"
 
         do {
@@ -395,6 +406,17 @@ private struct Verifier {
             expect(
                 !events.commandUp.flags.contains(.maskCommand),
                 "Command key-up clears modifier state"
+            )
+            try await service.postPasteShortcut(to: 42_424)
+            expectEqual(
+                postedEvents.map(\.processIdentifier),
+                [42_424, 42_424, 42_424, 42_424],
+                "every paste event targets the captured process"
+            )
+            expectEqual(
+                postedEvents.map(\.keyCode),
+                [55, 9, 9, 55],
+                "targeted paste preserves the complete Command-V sequence"
             )
             expect(
                 TextInsertionService.isStandardPasteMenuItem(
